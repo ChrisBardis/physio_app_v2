@@ -142,7 +142,22 @@ function bindPayment(element) {
   });
 }
 
+function suppressBrowserAutocomplete(root = document) {
+  root.querySelectorAll('form').forEach(form => {
+    form.setAttribute('autocomplete', 'off');
+  });
+  root.querySelectorAll(
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea',
+  ).forEach(field => {
+    field.setAttribute('autocomplete', 'one-time-code');
+    field.setAttribute('data-lpignore', 'true');
+    field.setAttribute('data-1p-ignore', 'true');
+    field.setAttribute('data-bwignore', 'true');
+  });
+}
+
 function initializeInteractiveElements(root = document) {
+  suppressBrowserAutocomplete(root);
   root.querySelectorAll('.autosave').forEach(bindAutosave);
   root.querySelectorAll('.payment-input').forEach(bindPayment);
 }
@@ -220,6 +235,7 @@ function bindAutocomplete(input) {
   input.dataset.autocompleteBound = 'true';
   const control = input.closest('.autocomplete-control');
   const menu = control?.querySelector('.autocomplete-menu');
+  const toggle = control?.querySelector('.autocomplete-toggle');
   const hiddenId = control?.querySelector('[data-autocomplete-id]');
   if (!menu) return;
 
@@ -255,7 +271,10 @@ function bindAutocomplete(input) {
     const selected = suggestions[index];
     if (!selected) return;
     input.value = selected.value;
-    if (hiddenId) hiddenId.value = selected.id ?? '';
+    if (hiddenId) {
+      hiddenId.value = selected.id ?? '';
+      saveElement(hiddenId);
+    }
     close();
     input.dispatchEvent(new Event('change', {bubbles: true}));
   };
@@ -282,12 +301,9 @@ function bindAutocomplete(input) {
     input.setAttribute('aria-expanded', String(items.length > 0));
   };
 
-  const load = async () => {
-    const query = input.value.trim();
-    if (!query) {
-      close();
-      return;
-    }
+  const load = async (showAll = false) => {
+    const currentValue = input.value.trim();
+    const query = showAll ? '' : currentValue;
     controller?.abort();
     controller = new AbortController();
     const url = new URL('/api/autocomplete', window.location.origin);
@@ -297,14 +313,17 @@ function bindAutocomplete(input) {
       const response = await fetch(url, {credentials: 'same-origin', signal: controller.signal});
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || `Σφάλμα ${response.status}`);
-      if (input.value.trim() === query) render(body.suggestions || []);
+      if (showAll || input.value.trim() === currentValue) render(body.suggestions || []);
     } catch (error) {
       if (error.name !== 'AbortError') close();
     }
   };
 
   input.addEventListener('input', () => {
-    if (hiddenId) hiddenId.value = '';
+    if (hiddenId) {
+      hiddenId.value = '';
+      if (!input.value.trim()) saveElement(hiddenId);
+    }
     window.clearTimeout(timer);
     timer = window.setTimeout(load, 160);
   });
@@ -325,6 +344,15 @@ function bindAutocomplete(input) {
     }
   });
   input.addEventListener('blur', () => window.setTimeout(close, 120));
+  toggle?.addEventListener('pointerdown', event => event.preventDefault());
+  toggle?.addEventListener('click', () => {
+    if (!menu.hidden) {
+      close();
+      return;
+    }
+    load(true);
+    input.focus({preventScroll: true});
+  });
 }
 
 document.querySelectorAll('[data-autocomplete]').forEach(bindAutocomplete);

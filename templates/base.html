@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ΦΥΣΙΟ{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260829-no-browser-autofill') }}">
   <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body>
@@ -31,7 +31,7 @@
     {% block content %}{% endblock %}
   </main>
   <div id="toast" class="toast" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js', v='20260829-no-browser-autofill') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

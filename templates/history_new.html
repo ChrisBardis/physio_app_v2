@@ -7,7 +7,7 @@
   <div class="patient-strip"><a href="{{ url_for('patient_detail', patient_id=patient.patient_id) }}">Ασθενής {{ patient.patient_id }}</a><strong>{{ patient.first_name or '' }} {{ patient.last_name or '' }}</strong><span>{{ patient.birthdate|grdate }}</span><span>{{ patient.mobile_phone or '' }}</span></div>
   <div class="panel-header"><div><h1>Νέο ιστορικό</h1><p>Το ιστορικό θα δημιουργηθεί μόνο όταν πατήσετε «Αποθήκευση».</p></div><a class="small-btn" href="{{ url_for('patient_detail', patient_id=patient.patient_id) }}">Ακύρωση</a></div>
   {% if error %}<div class="form-error" role="alert">{{ error }}</div>{% endif %}
-  <form method="post" class="form-grid two-col history-form manual-form" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
+  <form method="post" class="form-grid two-col history-form manual-form" autocomplete="off" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="patient_id" value="{{ patient.patient_id }}">
     <label>Ημερομηνία ιστορικού<input name="history_date" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ values.history_date|grdate }}" required></label>

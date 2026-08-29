@@ -11,10 +11,23 @@
 
 {% macro autocomplete_input(name, value, source, hidden_name='', hidden_value='') -%}
 <div class="autocomplete-control">
-  <input name="{{ name }}" value="{{ value }}" autocomplete="off"
+  <input name="{{ name }}" value="{{ value }}" autocomplete="one-time-code" data-lpignore="true"
          data-autocomplete="{{ source }}" role="combobox" aria-autocomplete="list"
          aria-expanded="false" aria-controls="{{ name }}-suggestions">
   {% if hidden_name %}<input type="hidden" name="{{ hidden_name }}" value="{{ hidden_value }}" data-autocomplete-id>{% endif %}
+  <button type="button" class="autocomplete-toggle" aria-label="Εμφάνιση λίστας" title="Εμφάνιση λίστας"><span aria-hidden="true">▾</span></button>
+  <div id="{{ name }}-suggestions" class="autocomplete-menu" role="listbox" hidden></div>
+</div>
+{%- endmacro %}
+
+{% macro autocomplete_autosave_input(name, value, source, table, pk, column, hidden_name='', hidden_value='') -%}
+<div class="autocomplete-control">
+  <input{% if not hidden_name %} class="autosave" data-table="{{ table }}" data-pk="{{ pk }}" data-column="{{ column }}"{% endif %} value="{{ value }}" autocomplete="one-time-code" data-lpignore="true"
+         data-autocomplete="{{ source }}" role="combobox" aria-autocomplete="list"
+         aria-expanded="false" aria-controls="{{ name }}-suggestions">
+  {% if hidden_name %}<input type="hidden" class="autosave" value="{{ hidden_value }}" data-autocomplete-id
+         data-table="{{ table }}" data-pk="{{ pk }}" data-column="{{ column }}">{% endif %}
+  <button type="button" class="autocomplete-toggle" aria-label="Εμφάνιση λίστας" title="Εμφάνιση λίστας"><span aria-hidden="true">▾</span></button>
   <div id="{{ name }}-suggestions" class="autocomplete-menu" role="listbox" hidden></div>
 </div>
 {%- endmacro %}

@@ -9,18 +9,18 @@
     <a class="small-btn" href="{{ url_for('patients') }}">Ακύρωση</a>
   </div>
   {% if error %}<div class="form-error" role="alert">{{ error }}</div>{% endif %}
-  <form method="post" class="form-grid two-col manual-form" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
+  <form method="post" class="form-grid two-col manual-form" autocomplete="off" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Όνομα{{ autocomplete_input('first_name', values.first_name, 'first_name') }}</label>
-    <label>Επώνυμο<input name="last_name" value="{{ values.last_name }}" autocomplete="family-name"></label>
-    <label>Διεύθυνση<input name="address" value="{{ values.address }}" autocomplete="street-address"></label>
+    <label>Επώνυμο<input name="last_name" value="{{ values.last_name }}" autocomplete="one-time-code"></label>
+    <label>Διεύθυνση<input name="address" value="{{ values.address }}" autocomplete="one-time-code"></label>
     <label>Πόλη{{ autocomplete_input('city', values.city, 'city') }}</label>
-    <label>Ταχυδρομικός κώδικας<input name="postal_code" value="{{ values.postal_code }}" autocomplete="postal-code"></label>
+    <label>Ταχυδρομικός κώδικας<input name="postal_code" value="{{ values.postal_code }}" autocomplete="one-time-code"></label>
     <label>Φύλο<select name="gender"><option value="">—</option><option value="Male" {% if values.gender=='Male' %}selected{% endif %}>Άνδρας</option><option value="Female" {% if values.gender=='Female' %}selected{% endif %}>Γυναίκα</option></select></label>
-    <label>Τηλέφωνο εργασίας<input name="work_phone" value="{{ values.work_phone }}" autocomplete="tel"></label>
-    <label>Τηλέφωνο οικίας<input name="home_phone" value="{{ values.home_phone }}" autocomplete="tel"></label>
-    <label>Κινητό<input name="mobile_phone" value="{{ values.mobile_phone }}" autocomplete="tel"></label>
-    <label>Email<input name="email" type="email" value="{{ values.email }}" autocomplete="email"></label>
+    <label>Τηλέφωνο εργασίας<input name="work_phone" value="{{ values.work_phone }}" autocomplete="one-time-code"></label>
+    <label>Τηλέφωνο οικίας<input name="home_phone" value="{{ values.home_phone }}" autocomplete="one-time-code"></label>
+    <label>Κινητό<input name="mobile_phone" value="{{ values.mobile_phone }}" autocomplete="one-time-code"></label>
+    <label>Email<input name="email" type="email" value="{{ values.email }}" autocomplete="one-time-code"></label>
     <label>Ημερομηνία γέννησης<input name="birthdate" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ values.birthdate|grdate }}"></label>
     <label>Αριθμός ταυτότητας<input name="identity_number" value="{{ values.identity_number }}"></label>
     <label>Παραπομπή από{{ autocomplete_input('referral_text', values.referral_text, 'referral', 'referral_id', values.referral_id) }}</label>

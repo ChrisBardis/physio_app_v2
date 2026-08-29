@@ -392,23 +392,27 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.route("/patients/<int:patient_id>")
     def patient_detail(patient_id: int):
         with db_conn(app) as con:
-            patient = con.execute("SELECT * FROM patients WHERE patient_id=?", (patient_id,)).fetchone()
+            patient = con.execute(
+                """
+                SELECT p.*,
+                       TRIM(COALESCE(r.last_name,'') || ' ' || COALESCE(r.first_name,'')) AS referral_name,
+                       pr.profession_name
+                FROM patients p
+                LEFT JOIN referrals r ON r.referral_id=p.referral_id
+                LEFT JOIN professions pr ON pr.profession_id=p.profession_id
+                WHERE p.patient_id=?
+                """,
+                (patient_id,),
+            ).fetchone()
             if not patient:
                 abort(404)
-            referrals = con.execute(
-                "SELECT referral_id, first_name, last_name FROM referrals ORDER BY last_name, first_name"
-            ).fetchall()
-            professions = con.execute(
-                "SELECT profession_id, profession_name FROM professions ORDER BY profession_name"
-            ).fetchall()
             histories = con.execute("""
                 SELECT history_id, history_date, main_diagnosis, is_active, today
                 FROM clinical_histories WHERE patient_id=?
                 ORDER BY history_date DESC, history_id DESC
             """, (patient_id,)).fetchall()
         return render_template(
-            "patient.html", patient=patient, referrals=referrals,
-            professions=professions, histories=histories,
+            "patient.html", patient=patient, histories=histories,
         )
 
     @app.route("/histories/new", methods=["GET", "POST"])
@@ -555,10 +559,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         field = request.args.get("field", "")
         source = AUTOCOMPLETE_SOURCES.get(field)
         query = request.args.get("q", "").strip()
-        if not source or not query:
+        if not source:
             return jsonify(ok=True, suggestions=[])
         normalized_query = normalize_search_text(query[:200])
-        pattern = (
+        pattern = "%" if not normalized_query else (
             f"{escape_like(normalized_query)}%"
             if source.get("prefix") else f"%{escape_like(normalized_query)}%"
         )

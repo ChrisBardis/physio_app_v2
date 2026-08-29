@@ -228,6 +228,7 @@ class PhysioAppTests(unittest.TestCase):
 
     def test_new_forms_have_all_nine_autocomplete_fields(self):
         patient_html = self.client.get("/patients/new").get_data(as_text=True)
+        patient_detail_html = self.client.get("/patients/1").get_data(as_text=True)
         history_html = self.client.get("/histories/new?patient_id=1").get_data(as_text=True)
         patient_fields = ("first_name", "city", "referral", "profession")
         history_fields = (
@@ -235,6 +236,15 @@ class PhysioAppTests(unittest.TestCase):
         )
         for field in patient_fields:
             self.assertIn(f'data-autocomplete="{field}"', patient_html)
+            self.assertIn(f'data-autocomplete="{field}"', patient_detail_html)
+        self.assertEqual(patient_detail_html.count('class="autocomplete-toggle"'), 4)
+        self.assertNotIn('autocomplete="off"', patient_detail_html)
+        self.assertIn('app.js?v=20260829-no-browser-autofill', patient_detail_html)
+        self.assertNotIn('autocomplete="family-name"', patient_html)
+        self.assertNotIn('autocomplete="street-address"', patient_html)
+        self.assertNotIn('autocomplete="tel"', patient_html)
+        self.assertNotIn('autocomplete="email"', patient_html)
+        self.assertIn('autocomplete="off"', patient_html)
         for field in history_fields:
             self.assertIn(f'data-autocomplete="{field}"', history_html)
 
@@ -256,6 +266,12 @@ class PhysioAppTests(unittest.TestCase):
         self.assertEqual(suggestions[0]["frequency"], 3)
         self.assertEqual(suggestions[1]["frequency"], 1)
         self.assertLessEqual(len(suggestions), 15)
+
+        unfiltered = self.client.get(
+            "/api/autocomplete?field=first_name&q="
+        ).get_json()["suggestions"]
+        self.assertTrue(unfiltered)
+        self.assertGreaterEqual(unfiltered[0]["frequency"], unfiltered[-1]["frequency"])
 
     def test_name_autocomplete_and_list_search_use_prefix_matching(self):
         con = sqlite3.connect(self.db_path)
