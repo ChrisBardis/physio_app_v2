@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}Ιστορικό {{ history.history_id }} — ΦΥΣΙΟ{% endblock %}
+{% block back_url %}{{ url_for('patient_detail', patient_id=history.patient_id) }}{% endblock %}
+{% block content %}
+<section class="panel history-panel">
+  <div class="patient-strip"><a href="{{ url_for('patient_detail', patient_id=history.patient_id) }}">Ασθενής {{ history.patient_id }}</a><strong>{{ history.first_name or '' }} {{ history.last_name or '' }}</strong><span>{{ history.birthdate|grdate }}</span><span>{{ history.mobile_phone or '' }}</span><a class="small-btn" href="{{ url_for('current', history_id=history.history_id) }}">Προς ΑΥΤΟΣ</a></div>
+  <div class="panel-header"><div><h1>Ιστορικό #{{ history.history_id }}</h1><p>Αυτόματη αποθήκευση</p></div></div>
+  <div class="form-grid two-col history-form">
+    <label>Ημερομηνία ιστορικού<input class="autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="history_date" value="{{ history.history_date|grdate }}"></label>
+    <label>Κύρια διάγνωση<input class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="main_diagnosis" value="{{ history.main_diagnosis or '' }}"></label>
+    <label class="full">Περιγραφή προβλήματος<textarea class="autosave tall" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="problem_description">{{ history.problem_description or '' }}</textarea></label>
+    <label>Περιοχή σώματος<input class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="body_area" value="{{ history.body_area or '' }}"></label>
+    <label>Ημερομηνία ολοκλήρωσης<input class="autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="date_completed" value="{{ history.date_completed|grdate }}"></label>
+    <label>Ιατρός<select class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="doctor_id"><option value="">—</option>{% for d in doctors %}<option value="{{ d.doctor_id }}" {% if history.doctor_id==d.doctor_id %}selected{% endif %}>{{ d.last_name or '' }} {{ d.first_name or '' }}{% if d.specialty %} — {{ d.specialty }}{% endif %}</option>{% endfor %}</select></label>
+    <label>Κοινωνική ασφάλιση<input class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="social_security" value="{{ history.social_security or '' }}"></label>
+    <label>ICD10<input class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="icd10_code" value="{{ history.icd10_code or '' }}"></label>
+    <label>Παραπεμπτικό ΓεΣΥ<input class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="gesy_referral" value="{{ history.gesy_referral or '' }}"></label>
+    <label class="check-label"><input type="checkbox" class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="is_active" value="1" {% if history.is_active %}checked{% endif %}> Ενεργό ιστορικό</label>
+    <label class="check-label"><input type="checkbox" class="autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="today" value="1" {% if history.today %}checked{% endif %}> Εμφάνιση στον «ΑΥΤΟΣ»</label>
+  </div>
+</section>
+{% endblock %}

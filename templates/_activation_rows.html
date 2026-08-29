@@ -1,0 +1,5 @@
+{% for r in rows %}
+<tr data-list-row><td>{{ r.patient_id }}</td><td>{{ r.history_id }}</td><td>{{ r.first_name or '' }}</td><td>{{ r.last_name or '' }}</td><td>{{ r.history_date|grdate }}</td><td>{{ r.main_diagnosis or '' }}</td><td>{{ r.home_phone or '' }}</td><td>{{ r.mobile_phone or '' }}</td><td><button class="small-btn activate-history" data-history="{{ r.history_id }}">Ενεργοποίηση</button></td></tr>
+{% else %}
+{% if not request.args.get('offset') %}<tr data-empty-row><td colspan="9" class="empty">Δεν βρέθηκαν ιστορικά.</td></tr>{% endif %}
+{% endfor %}

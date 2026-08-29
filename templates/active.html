@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% from '_macros.html' import sortable with context %}
+{% block title %}Ενεργά ιστορικά — ΦΥΣΙΟ{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div><h1>Ενεργά ιστορικά</h1><p>Η αντίστοιχη οθόνη «1 ContactsWithHistory ακτιβ».</p></div>
+    <form class="search-form" method="get"><input name="q" value="{{ q }}" placeholder="Όνομα, κινητό, Patient ID, History ID"><button>Αναζήτηση</button></form>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table compact">
+      <thead><tr>{{ sortable('Ασθενής ID', 'patient_id', current_sort, current_dir) }}{{ sortable('Ιστορικό ID', 'history_id', current_sort, current_dir) }}{{ sortable('Όνομα', 'first_name', current_sort, current_dir) }}{{ sortable('Επώνυμο', 'last_name', current_sort, current_dir) }}{{ sortable('Ημερομηνία ιστορικού', 'history_date', current_sort, current_dir) }}{{ sortable('Διάγνωση', 'diagnosis', current_sort, current_dir) }}{{ sortable('Κινητό', 'mobile', current_sort, current_dir) }}{{ sortable('Ενεργή επαφή', 'patient_active', current_sort, current_dir) }}{{ sortable('Στον ΑΥΤΟΣ', 'today', current_sort, current_dir) }}<th>Ενέργειες</th></tr></thead>
+      <tbody data-infinite-list data-next-offset="{{ next_offset }}" data-batch-size="{{ batch_size }}" data-has-more="{{ 'true' if has_more else 'false' }}" data-colspan="10">
+        <tr class="infinite-spacer" data-infinite-top hidden><td colspan="10"></td></tr>
+        {% include '_active_rows.html' %}
+        <tr class="infinite-spacer" data-infinite-bottom hidden><td colspan="10"></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
+</section>
+{% endblock %}

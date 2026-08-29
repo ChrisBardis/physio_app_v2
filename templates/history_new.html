@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% from '_macros.html' import autocomplete_input %}
+{% block title %}Νέο ιστορικό — ΦΥΣΙΟ{% endblock %}
+{% block back_url %}{{ url_for('patient_detail', patient_id=patient.patient_id) }}{% endblock %}
+{% block content %}
+<section class="panel edit-panel">
+  <div class="patient-strip"><a href="{{ url_for('patient_detail', patient_id=patient.patient_id) }}">Ασθενής {{ patient.patient_id }}</a><strong>{{ patient.first_name or '' }} {{ patient.last_name or '' }}</strong><span>{{ patient.birthdate|grdate }}</span><span>{{ patient.mobile_phone or '' }}</span></div>
+  <div class="panel-header"><div><h1>Νέο ιστορικό</h1><p>Το ιστορικό θα δημιουργηθεί μόνο όταν πατήσετε «Αποθήκευση».</p></div><a class="small-btn" href="{{ url_for('patient_detail', patient_id=patient.patient_id) }}">Ακύρωση</a></div>
+  {% if error %}<div class="form-error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" class="form-grid two-col history-form manual-form" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="patient_id" value="{{ patient.patient_id }}">
+    <label>Ημερομηνία ιστορικού<input name="history_date" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ values.history_date|grdate }}" required></label>
+    <label>Κύρια διάγνωση{{ autocomplete_input('main_diagnosis', values.main_diagnosis, 'main_diagnosis') }}</label>
+    <label class="full">Περιγραφή προβλήματος<textarea class="tall" name="problem_description">{{ values.problem_description }}</textarea></label>
+    <label>Περιοχή σώματος{{ autocomplete_input('body_area', values.body_area, 'body_area') }}</label>
+    <label>Ημερομηνία ολοκλήρωσης<input name="date_completed" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ values.date_completed|grdate }}"></label>
+    <label>Ιατρός{{ autocomplete_input('doctor_text', values.doctor_text, 'doctor', 'doctor_id', values.doctor_id) }}</label>
+    <label>Κοινωνική ασφάλιση{{ autocomplete_input('social_security', values.social_security, 'social_security') }}</label>
+    <label>ICD-10{{ autocomplete_input('icd10_code', values.icd10_code, 'icd10_code') }}</label>
+    <label>Παραπεμπτικό ΓεΣΥ<input name="gesy_referral" value="{{ values.gesy_referral }}"></label>
+    <label class="check-label"><input type="checkbox" name="is_active" value="1" {% if values.is_active|string=='1' %}checked{% endif %}> Ενεργό ιστορικό</label>
+    <label class="check-label"><input type="checkbox" name="today" value="1" {% if values.today|string=='1' %}checked{% endif %}> Εμφάνιση στον «ΑΥΤΟΣ»</label>
+    <div class="full form-actions"><button class="primary-btn" type="submit">Αποθήκευση</button><a class="small-btn" href="{{ url_for('patient_detail', patient_id=patient.patient_id) }}">Ακύρωση</a></div>
+  </form>
+</section>
+{% endblock %}

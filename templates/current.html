@@ -1,0 +1,47 @@
+{% extends 'base.html' %}
+{% from '_macros.html' import sortable with context %}
+{% block title %}ΑΥΤΟΣ — ΦΥΣΙΟ{% endblock %}
+{% block content %}
+{% if not current_rows %}
+<section class="panel empty-state"><h1>ΑΥΤΟΣ</h1><p>Δεν υπάρχει ιστορικό με ενεργοποιημένη την επιλογή «Στον ΑΥΤΟΣ».</p><a class="primary-btn" href="{{ url_for('active_histories') }}">Ενεργά ιστορικά</a></section>
+{% else %}
+<section class="current-layout">
+  <aside class="current-patients panel">
+    <h2>ΑΥΤΟΣ</h2>
+    <p class="muted">Επιλεγμένοι ασθενείς / ιστορικά</p>
+    <div class="current-list">{% for r in current_rows %}<a class="current-item {% if history and r.history_id==history.history_id %}selected{% endif %}" href="{{ url_for('current', history_id=r.history_id) }}"><strong>{{ r.last_name or '' }} {{ r.first_name or '' }}</strong><span>History {{ r.history_id }}</span><small>{{ r.main_diagnosis or '' }}</small></a>{% endfor %}</div>
+  </aside>
+  <section class="current-main panel">
+    <div class="current-header-grid">
+      <div><span class="label">Ασθενής ID</span><strong>{{ history.patient_id }}</strong></div>
+      <div><span class="label">Όνομα</span><strong>{{ history.first_name or '' }}</strong></div>
+      <div><span class="label">Επώνυμο</span><strong>{{ history.last_name or '' }}</strong></div>
+      <div><span class="label">Κινητό</span><strong>{{ history.mobile_phone or '' }}</strong></div>
+      <div><span class="label">Ημερομηνία γέννησης</span><strong>{{ history.birthdate|grdate }}</strong></div>
+      <div><span class="label">Αριθμός ταυτότητας</span><strong>{{ history.identity_number or '' }}</strong></div>
+      <div><span class="label">Ιστορικό ID</span><strong>{{ history.history_id }}</strong></div>
+      <div><span class="label">Ημερομηνία ιστορικού</span><strong>{{ history.history_date|grdate }}</strong></div>
+      <div><span class="label">Ενεργό ιστορικό</span><strong>{{ 'Ναι' if history.is_active else 'Όχι' }}</strong></div>
+      <div><span class="label">Κοινωνική ασφάλιση</span><strong>{{ history.social_security or '' }}</strong></div>
+      <div><span class="label">Παραπεμπτικό ΓεΣΥ</span><strong>{{ history.gesy_referral or '' }}</strong></div>
+    </div>
+    <div class="history-summary"><div class="summary-line"><strong>#{{ history.history_id }}</strong><span>{{ history.main_diagnosis or '' }}</span><span>{{ 'Ναι' if history.is_active else 'Όχι' }}</span><span>{{ history.social_security or '' }}</span></div><div class="problem-box">{{ history.problem_description or '' }}</div></div>
+    <div class="session-toolbar"><h2>Συνεδρίες</h2><button id="new-appointment" class="primary-btn" data-history="{{ history.history_id }}">+ Νέα συνεδρία</button></div>
+    <div class="table-wrap sessions-wrap">
+      <table class="data-table sessions-table"><thead><tr>{{ sortable('Α/Α', 'number', current_sort, current_dir) }}{{ sortable('Ημερομηνία', 'date', current_sort, current_dir) }}{{ sortable('Χρέωση', 'due', current_sort, current_dir) }}{{ sortable('Πληρωμή', 'paid', current_sort, current_dir) }}{{ sortable('Απόδειξη', 'receipt', current_sort, current_dir) }}{{ sortable('Σημειώσεις', 'notes', current_sort, current_dir) }}</tr></thead><tbody id="appointments-body">
+      {% for a in appointments %}
+        <tr data-appointment="{{ a.appointment_id }}">
+          <td><input type="number" class="grid-input autosave" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_number" value="{{ a.appointment_number if a.appointment_number is not none else '' }}"></td>
+          <td><input class="grid-input autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_date" value="{{ a.appointment_date|grdate }}"></td>
+          <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_due" value="{{ '%.2f'|format(a.amount_due or 0) }}"></td>
+          <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_paid" value="{{ '%.2f'|format(a.amount_paid or 0) }}"></td>
+          <td><input class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="receipt_number" value="{{ a.receipt_number or '0' }}"></td>
+          <td><input class="grid-input autosave" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="notes" value="{{ a.notes or '' }}"></td>
+        </tr>
+      {% else %}<tr id="no-appointments"><td colspan="6" class="empty">Δεν υπάρχουν συνεδρίες.</td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </section>
+</section>
+{% endif %}
+{% endblock %}

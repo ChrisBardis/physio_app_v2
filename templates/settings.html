@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Ρυθμίσεις — ΦΥΣΙΟ{% endblock %}
+{% block content %}
+<section class="settings-grid">
+  <div class="panel settings-panel">
+    <h1>Ρυθμίσεις</h1>
+    <p>Οι ρυθμίσεις και το Undo αποθηκεύονται χωριστά από την κλινική βάση.</p>
+    <label class="setting-row"><span>Προεπιλεγμένο ποσό νέας συνεδρίας (€)</span><input id="default-amount" type="number" min="0" max="1000000" step="0.01" value="{{ default_amount }}"></label>
+    <p class="muted">Το ποσό συμπληρώνεται αυτόματα και μπορεί να αλλάξει ανά συνεδρία.</p>
+  </div>
+  <div class="panel settings-panel">
+    <h2>Αντίγραφα ασφαλείας</h2>
+    <p><strong>Τελευταίο:</strong> <span id="backup-latest">{{ backup.latest or 'Δεν υπάρχει' }}</span></p>
+    <p><strong>Σύνολο:</strong> {{ backup.count }}</p>
+    <p class="path-value">{{ backup.directory }}</p>
+    <button id="create-backup" class="primary-btn" type="button">Δημιουργία backup τώρα</button>
+  </div>
+  <div class="panel settings-panel health-panel">
+    <h2>Έλεγχος δεδομένων</h2>
+    <dl class="health-grid">
+      <div><dt>Ακεραιότητα βάσης</dt><dd class="{{ 'health-ok' if health.integrity=='ok' else 'health-warning' }}">{{ 'Εντάξει' if health.integrity=='ok' else health.integrity }}</dd></div>
+      <div><dt>Προβλήματα σχέσεων</dt><dd class="{{ 'health-ok' if health.foreign_key_issues==0 else 'health-warning' }}">{{ health.foreign_key_issues }}</dd></div>
+      <div><dt>Κενοί ασθενείς</dt><dd>{{ health.blank_patients }}</dd></div>
+      <div><dt>Κενά ιστορικά</dt><dd>{{ health.blank_histories }}</dd></div>
+      <div><dt>Συνεδρίες χωρίς οικονομική εγγραφή</dt><dd>{{ health.appointments_without_payment }}</dd></div>
+      <div><dt>Συνεδρίες με πολλαπλές οικονομικές εγγραφές</dt><dd>{{ health.appointments_multiple_payments }}</dd></div>
+    </dl>
+    <p class="muted path-value">Κλινική βάση: {{ database_path }}</p>
+  </div>
+</section>
+{% endblock %}

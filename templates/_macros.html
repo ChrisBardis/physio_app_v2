@@ -1,0 +1,20 @@
+{% macro sortable(label, key, current_sort, current_dir) -%}
+{% set next_dir = 'desc' if current_sort == key and current_dir == 'asc' else 'asc' %}
+{% set sort_label = 'Ταξινόμηση φθίνουσα' if next_dir == 'desc' else 'Ταξινόμηση αύξουσα' %}
+<th aria-sort="{% if current_sort == key %}{{ 'ascending' if current_dir == 'asc' else 'descending' }}{% else %}none{% endif %}">
+  <a class="sort-link" href="{{ sort_url(key, current_sort, current_dir) }}" title="{{ sort_label }}" aria-label="{{ label }} — {{ sort_label }}">
+    <span>{{ label }}</span>
+    <span class="sort-button" aria-hidden="true">{{ '↓' if next_dir == 'desc' else '↑' }}</span>
+  </a>
+</th>
+{%- endmacro %}
+
+{% macro autocomplete_input(name, value, source, hidden_name='', hidden_value='') -%}
+<div class="autocomplete-control">
+  <input name="{{ name }}" value="{{ value }}" autocomplete="off"
+         data-autocomplete="{{ source }}" role="combobox" aria-autocomplete="list"
+         aria-expanded="false" aria-controls="{{ name }}-suggestions">
+  {% if hidden_name %}<input type="hidden" name="{{ hidden_name }}" value="{{ hidden_value }}" data-autocomplete-id>{% endif %}
+  <div id="{{ name }}-suggestions" class="autocomplete-menu" role="listbox" hidden></div>
+</div>
+{%- endmacro %}

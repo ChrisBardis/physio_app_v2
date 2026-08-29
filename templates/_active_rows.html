@@ -1,0 +1,11 @@
+{% for r in rows %}
+<tr data-list-row>
+  <td>{{ r.patient_id }}</td><td><a href="{{ url_for('history_detail', history_id=r.history_id) }}">{{ r.history_id }}</a></td>
+  <td>{{ r.first_name or '' }}</td><td>{{ r.last_name or '' }}</td><td>{{ r.history_date|grdate }}</td><td>{{ r.main_diagnosis or '' }}</td><td>{{ r.mobile_phone or '' }}</td>
+  <td class="center"><input type="checkbox" class="autosave" data-table="patients" data-pk="{{ r.patient_id }}" data-column="is_active" value="1" {% if r.patient_active %}checked{% endif %}></td>
+  <td class="center"><input type="checkbox" class="autosave" data-table="clinical_histories" data-pk="{{ r.history_id }}" data-column="today" value="1" {% if r.today %}checked{% endif %}></td>
+  <td class="actions"><a class="small-btn" href="{{ url_for('patient_detail', patient_id=r.patient_id) }}">Πελάτης</a><button class="small-btn danger deactivate-history" data-history="{{ r.history_id }}">Απενεργοποίηση</button></td>
+</tr>
+{% else %}
+{% if not request.args.get('offset') %}<tr data-empty-row><td colspan="10" class="empty">Δεν βρέθηκαν ενεργά ιστορικά.</td></tr>{% endif %}
+{% endfor %}

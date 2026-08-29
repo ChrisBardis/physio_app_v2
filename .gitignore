@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Local configuration and logs
+.env
+.env.*
+*.log
+
+# Clinical and application data must never enter Git
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/backups/
+physio_backups/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
