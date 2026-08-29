@@ -20,9 +20,9 @@
 </div>
 {%- endmacro %}
 
-{% macro autocomplete_autosave_input(name, value, source, table, pk, column, hidden_name='', hidden_value='') -%}
+{% macro autocomplete_autosave_input(name, value, source, table, pk, column, hidden_name='', hidden_value='', create_kind='') -%}
 <div class="autocomplete-control">
-  <input{% if not hidden_name %} class="autosave" data-table="{{ table }}" data-pk="{{ pk }}" data-column="{{ column }}"{% endif %} value="{{ value }}" autocomplete="one-time-code" data-lpignore="true"
+  <input{% if not hidden_name %} class="autosave" data-table="{{ table }}" data-pk="{{ pk }}" data-column="{{ column }}"{% elif create_kind %} class="related-autosave" data-table="{{ table }}" data-pk="{{ pk }}" data-column="{{ column }}" data-autocomplete-create="{{ create_kind }}"{% endif %} value="{{ value }}" autocomplete="one-time-code" data-lpignore="true"
          data-autocomplete="{{ source }}" role="combobox" aria-autocomplete="list"
          aria-expanded="false" aria-controls="{{ name }}-suggestions">
   {% if hidden_name %}<input type="hidden" class="autosave" value="{{ hidden_value }}" data-autocomplete-id

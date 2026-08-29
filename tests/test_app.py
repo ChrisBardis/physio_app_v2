@@ -226,10 +226,20 @@ class PhysioAppTests(unittest.TestCase):
         launcher_html = html[html.index('class="launcher-grid"'):html.index('class="keyboard-hint"')]
         self.assertNotIn(">ΑΥΤΟΣ<", launcher_html)
 
+    def test_daily_label_replaces_autos_in_visible_pages(self):
+        for path in ("/", "/current", "/active", "/patients/1", "/histories/1", "/histories/new?patient_id=1"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                html = response.get_data(as_text=True)
+                self.assertIn("Ημερήσια", html)
+                self.assertNotIn("ΑΥΤΟΣ", html)
+
     def test_new_forms_have_all_nine_autocomplete_fields(self):
         patient_html = self.client.get("/patients/new").get_data(as_text=True)
         patient_detail_html = self.client.get("/patients/1").get_data(as_text=True)
         history_html = self.client.get("/histories/new?patient_id=1").get_data(as_text=True)
+        history_detail_html = self.client.get("/histories/1").get_data(as_text=True)
         patient_fields = ("first_name", "city", "referral", "profession")
         history_fields = (
             "main_diagnosis", "body_area", "social_security", "doctor", "icd10_code",
@@ -238,8 +248,9 @@ class PhysioAppTests(unittest.TestCase):
             self.assertIn(f'data-autocomplete="{field}"', patient_html)
             self.assertIn(f'data-autocomplete="{field}"', patient_detail_html)
         self.assertEqual(patient_detail_html.count('class="autocomplete-toggle"'), 4)
+        self.assertIn('data-autocomplete-create="profession"', patient_detail_html)
         self.assertNotIn('autocomplete="off"', patient_detail_html)
-        self.assertIn('app.js?v=20260829-no-browser-autofill', patient_detail_html)
+        self.assertIn('app.js?v=20260829-session-totals', patient_detail_html)
         self.assertNotIn('autocomplete="family-name"', patient_html)
         self.assertNotIn('autocomplete="street-address"', patient_html)
         self.assertNotIn('autocomplete="tel"', patient_html)
@@ -247,6 +258,9 @@ class PhysioAppTests(unittest.TestCase):
         self.assertIn('autocomplete="off"', patient_html)
         for field in history_fields:
             self.assertIn(f'data-autocomplete="{field}"', history_html)
+        for field in ("main_diagnosis", "body_area", "social_security"):
+            self.assertIn(f'data-autocomplete="{field}"', history_detail_html)
+        self.assertEqual(history_detail_html.count('class="autocomplete-toggle"'), 3)
 
     def test_autocomplete_is_frequency_sorted_deduplicated_and_greek_insensitive(self):
         con = sqlite3.connect(self.db_path)
@@ -341,6 +355,49 @@ class PhysioAppTests(unittest.TestCase):
         self.assertEqual(self.count("referrals"), referrals_before)
         self.assertEqual(self.count("professions"), professions_before)
 
+    def test_existing_patient_can_create_new_profession_and_undo(self):
+        professions_before = self.count("professions")
+        response = self.client.post("/api/related-choice", json={
+            "table": "patients", "pk": 1, "column": "profession_id",
+            "kind": "profession", "value": "", "text": "Νέο επάγγελμα καρτέλας",
+        }, headers=self.api_headers())
+        self.assertEqual(response.status_code, 200)
+        created_id = response.get_json()["value"]
+        self.assertEqual(response.get_json()["display"], "Νέο επάγγελμα καρτέλας")
+        self.assertEqual(self.count("professions"), professions_before + 1)
+
+        con = sqlite3.connect(self.db_path)
+        saved_id = con.execute(
+            "SELECT profession_id FROM patients WHERE patient_id=1"
+        ).fetchone()[0]
+        con.close()
+        self.assertEqual(saved_id, created_id)
+
+        suggestions = self.client.get(
+            "/api/autocomplete?field=profession&q=νεο επαγγελμα καρτελας"
+        ).get_json()["suggestions"]
+        self.assertEqual(suggestions[0]["id"], created_id)
+
+        undo = self.client.post("/api/undo", json={}, headers=self.api_headers())
+        self.assertEqual(undo.status_code, 200)
+        self.assertEqual(self.count("professions"), professions_before)
+        con = sqlite3.connect(self.db_path)
+        restored_id = con.execute(
+            "SELECT profession_id FROM patients WHERE patient_id=1"
+        ).fetchone()[0]
+        con.close()
+        self.assertIsNone(restored_id)
+
+    def test_existing_patient_free_text_reuses_existing_profession(self):
+        professions_before = self.count("professions")
+        response = self.client.post("/api/related-choice", json={
+            "table": "patients", "pk": 1, "column": "profession_id",
+            "kind": "profession", "value": "", "text": "εκπαιδευτικός",
+        }, headers=self.api_headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["value"], 1)
+        self.assertEqual(self.count("professions"), professions_before)
+
     def test_new_doctor_value_is_saved_and_removed_by_undo(self):
         doctors_before = self.count("doctors")
         response = self.client.post("/histories/new", data={
@@ -389,6 +446,107 @@ class PhysioAppTests(unittest.TestCase):
                 self.assertEqual(empty_batch.status_code, 200)
                 self.assertEqual(empty_batch.get_json()["count"], 0)
 
+    def test_patient_list_shows_and_sorts_history_counts(self):
+        descending = self.client.get(
+            "/patients?sort=history_count&dir=desc"
+        ).get_data(as_text=True)
+        self.assertIn("Ιστορικά/Ενεργά", descending)
+        self.assertIn(">1/1<", descending)
+        self.assertIn(">0/0<", descending)
+        self.assertLess(
+            descending.index('href="/patients/1"'),
+            descending.index('href="/patients/2"'),
+        )
+
+        ascending = self.client.get(
+            "/patients?sort=history_count&dir=asc"
+        ).get_data(as_text=True)
+        self.assertLess(
+            ascending.index('href="/patients/2"'),
+            ascending.index('href="/patients/1"'),
+        )
+
+    def test_current_summary_keeps_only_diagnosis(self):
+        html = self.client.get("/current?history_id=1").get_data(as_text=True)
+        summary = html.split('<div class="summary-line">', 1)[1].split(
+            '</div><div class="problem-box">', 1
+        )[0]
+        self.assertIn("Ώμος", summary)
+        self.assertEqual(summary.count("<span>"), 1)
+        self.assertNotIn("#1", summary)
+        self.assertNotIn("Ναι", summary)
+
+    def test_current_shows_session_totals_between_title_and_new_button(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) VALUES(2,1,2,'2026-08-22')"
+        )
+        con.execute(
+            "INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_number) VALUES(2,'2026-08-22',15.5,10,'5')"
+        )
+        con.commit()
+        con.close()
+
+        html = self.client.get("/current?history_id=1").get_data(as_text=True)
+        toolbar = html.split('<div class="session-toolbar">', 1)[1].split("</div>\n    <div class=\"table-wrap", 1)[0]
+        self.assertLess(toolbar.index("Συνεδρίες"), toolbar.index('class="session-totals"'))
+        self.assertLess(toolbar.index('class="session-totals"'), toolbar.index('id="new-appointment"'))
+        self.assertIn('<span>Χρέωση</span><strong data-session-total="due">50.50</strong>', toolbar)
+        self.assertIn('<span>Πίστωση</span><strong data-session-total="credit">10.00</strong>', toolbar)
+        self.assertIn('<span>Αποδείξεις</span><strong data-session-total="receipts">5.00</strong>', toolbar)
+        self.assertNotIn("Σύνολο Χρέωσης", toolbar)
+
+    def test_current_filters_daily_active_histories_active_patients_and_all(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO patients(patient_id,first_name,last_name,is_active) VALUES(3,'ΑΝΕΝΕΡΓΟΣ','ΑΣΘΕΝΗΣ',0)"
+        )
+        con.executemany(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) VALUES(?,?,?,?,?,?)",
+            [
+                (2, 1, "2026-08-21", "Ανενεργό ιστορικό ενεργού ασθενή", 0, 0),
+                (3, 2, "2026-08-22", "Ενεργό ιστορικό ενεργού ασθενή", 1, 0),
+                (4, 3, "2026-08-23", "Ενεργό ιστορικό ανενεργού ασθενή", 1, 0),
+            ],
+        )
+        con.commit()
+        con.close()
+
+        expected_ids = {
+            "/current": {1},
+            "/current?view=active_histories": {1, 3, 4},
+            "/current?view=active_patients": {1, 2, 3},
+            "/current?view=all": {1, 2, 3, 4},
+        }
+        for path, included_ids in expected_ids.items():
+            with self.subTest(path=path):
+                html = self.client.get(path).get_data(as_text=True)
+                for history_id in range(1, 5):
+                    marker = f'data-history-id="{history_id}"'
+                    if history_id in included_ids:
+                        self.assertIn(marker, html)
+                    else:
+                        self.assertNotIn(marker, html)
+
+        default_html = self.client.get("/current").get_data(as_text=True)
+        for key, label in (
+            ("today", "Ημερήσια"),
+            ("active_histories", "Ενεργά ιστορικά"),
+            ("active_patients", "Ενεργός ασθενής"),
+            ("all", "Όλες οι εγγραφές"),
+        ):
+            self.assertIn(f'data-current-filter="{key}"', default_html)
+            self.assertIn(label, default_html)
+        self.assertIn('data-current-filter="today" href="/current?view=today" aria-current="page"', default_html)
+
+    def test_current_filter_header_stays_visible_while_record_list_scrolls(self):
+        stylesheet = (
+            Path(__file__).parents[1] / "static" / "css" / "app.css"
+        ).read_text(encoding="utf-8")
+        self.assertIn(".current-patients { position: sticky;", stylesheet)
+        self.assertIn("display: flex; flex-direction: column; overflow: hidden;", stylesheet)
+        self.assertIn(".current-list { flex: 1 1 auto; min-height: 0; overflow-y: auto;", stylesheet)
+
     def test_screen_actions_and_shared_dirty_form_protection_are_rendered(self):
         for path in ("/patients", "/patients/new", "/patients/1", "/histories/1", "/settings"):
             html = self.client.get(path).get_data(as_text=True)
@@ -400,6 +558,20 @@ class PhysioAppTests(unittest.TestCase):
         javascript = (Path(__file__).parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
         self.assertIn("beforeunload", javascript)
         self.assertIn("Υπάρχουν αλλαγές που δεν έχουν αποθηκευτεί", javascript)
+
+    def test_save_status_is_in_topbar_and_tables_have_vertical_lines(self):
+        html = self.client.get("/patients").get_data(as_text=True)
+        header_start = html.index('class="topbar"')
+        header_end = html.index("</header>", header_start)
+        status_position = html.index('id="save-status"')
+        self.assertLess(header_start, status_position)
+        self.assertLess(status_position, header_end)
+
+        stylesheet = (
+            Path(__file__).parents[1] / "static" / "css" / "app.css"
+        ).read_text(encoding="utf-8")
+        self.assertIn(".data-table th:not(:last-child)", stylesheet)
+        self.assertIn(".data-table td:not(:last-child)", stylesheet)
 
     def test_validation_errors_only_mark_meaningful_submitted_values_dirty(self):
         unchanged = self.client.post("/patients/new", data={

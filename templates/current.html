@@ -1,16 +1,17 @@
 {% extends 'base.html' %}
 {% from '_macros.html' import sortable with context %}
-{% block title %}ΑΥΤΟΣ — ΦΥΣΙΟ{% endblock %}
+{% block title %}Ημερήσια — ΦΥΣΙΟ{% endblock %}
 {% block content %}
-{% if not current_rows %}
-<section class="panel empty-state"><h1>ΑΥΤΟΣ</h1><p>Δεν υπάρχει ιστορικό με ενεργοποιημένη την επιλογή «Στον ΑΥΤΟΣ».</p><a class="primary-btn" href="{{ url_for('active_histories') }}">Ενεργά ιστορικά</a></section>
-{% else %}
 <section class="current-layout">
   <aside class="current-patients panel">
-    <h2>ΑΥΤΟΣ</h2>
+    <h2>Ημερήσια</h2>
     <p class="muted">Επιλεγμένοι ασθενείς / ιστορικά</p>
-    <div class="current-list">{% for r in current_rows %}<a class="current-item {% if history and r.history_id==history.history_id %}selected{% endif %}" href="{{ url_for('current', history_id=r.history_id) }}"><strong>{{ r.last_name or '' }} {{ r.first_name or '' }}</strong><span>History {{ r.history_id }}</span><small>{{ r.main_diagnosis or '' }}</small></a>{% endfor %}</div>
+    <nav class="current-filters" aria-label="Κατηγορίες ασθενών και ιστορικών">
+      {% for key, label in current_filters %}<a class="current-filter{% if current_view == key %} active{% endif %}" data-current-filter="{{ key }}" href="{{ url_for('current', view=key) }}"{% if current_view == key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+    </nav>
+    <div class="current-list">{% for r in current_rows %}<a class="current-item {% if history and r.history_id==history.history_id %}selected{% endif %}" data-history-id="{{ r.history_id }}" href="{{ url_for('current', history_id=r.history_id, view=current_view, sort=current_sort, dir=current_dir) }}"><strong>{{ r.last_name or '' }} {{ r.first_name or '' }}</strong><span>History {{ r.history_id }}</span><small>{{ r.main_diagnosis or '' }}</small></a>{% else %}<p class="current-list-empty">Δεν υπάρχουν εγγραφές σε αυτή την κατηγορία.</p>{% endfor %}</div>
   </aside>
+  {% if history %}
   <section class="current-main panel">
     <div class="current-header-grid">
       <div><span class="label">Ασθενής ID</span><strong>{{ history.patient_id }}</strong></div>
@@ -25,8 +26,16 @@
       <div><span class="label">Κοινωνική ασφάλιση</span><strong>{{ history.social_security or '' }}</strong></div>
       <div><span class="label">Παραπεμπτικό ΓεΣΥ</span><strong>{{ history.gesy_referral or '' }}</strong></div>
     </div>
-    <div class="history-summary"><div class="summary-line"><strong>#{{ history.history_id }}</strong><span>{{ history.main_diagnosis or '' }}</span><span>{{ 'Ναι' if history.is_active else 'Όχι' }}</span><span>{{ history.social_security or '' }}</span></div><div class="problem-box">{{ history.problem_description or '' }}</div></div>
-    <div class="session-toolbar"><h2>Συνεδρίες</h2><button id="new-appointment" class="primary-btn" data-history="{{ history.history_id }}">+ Νέα συνεδρία</button></div>
+    <div class="history-summary"><div class="summary-line"><span>{{ history.main_diagnosis or '' }}</span></div><div class="problem-box">{{ history.problem_description or '' }}</div></div>
+    <div class="session-toolbar">
+      <h2>Συνεδρίες</h2>
+      <div class="session-totals" aria-label="Σύνολα συνεδριών">
+        <div class="session-total"><span>Χρέωση</span><strong data-session-total="due">{{ '%.2f'|format(appointment_totals.due) }}</strong></div>
+        <div class="session-total"><span>Πίστωση</span><strong data-session-total="credit">{{ '%.2f'|format(appointment_totals.credit) }}</strong></div>
+        <div class="session-total"><span>Αποδείξεις</span><strong data-session-total="receipts">{{ '%.2f'|format(appointment_totals.receipts) }}</strong></div>
+      </div>
+      <button id="new-appointment" class="primary-btn" data-history="{{ history.history_id }}">+ Νέα συνεδρία</button>
+    </div>
     <div class="table-wrap sessions-wrap">
       <table class="data-table sessions-table"><thead><tr>{{ sortable('Α/Α', 'number', current_sort, current_dir) }}{{ sortable('Ημερομηνία', 'date', current_sort, current_dir) }}{{ sortable('Χρέωση', 'due', current_sort, current_dir) }}{{ sortable('Πληρωμή', 'paid', current_sort, current_dir) }}{{ sortable('Απόδειξη', 'receipt', current_sort, current_dir) }}{{ sortable('Σημειώσεις', 'notes', current_sort, current_dir) }}</tr></thead><tbody id="appointments-body">
       {% for a in appointments %}
@@ -42,6 +51,8 @@
       </tbody></table>
     </div>
   </section>
+  {% else %}
+  <section class="panel empty-state current-empty"><h1>{{ current_view_label }}</h1><p>{{ current_empty_message }}</p></section>
+  {% endif %}
 </section>
-{% endif %}
 {% endblock %}

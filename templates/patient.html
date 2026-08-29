@@ -20,14 +20,14 @@
       <label>Ημερομηνία γέννησης<input class="autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="birthdate" value="{{ patient.birthdate|grdate }}"></label>
       <label>Αριθμός ταυτότητας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="identity_number" value="{{ patient.identity_number or '' }}"></label>
       <label>Παραπομπή από{{ autocomplete_autosave_input('patient-referral', patient.referral_name or '', 'referral', 'patients', patient.patient_id, 'referral_id', 'referral_id', patient.referral_id or '') }}</label>
-      <label>Επάγγελμα{{ autocomplete_autosave_input('patient-profession', patient.profession_name or '', 'profession', 'patients', patient.patient_id, 'profession_id', 'profession_id', patient.profession_id or '') }}</label>
+      <label>Επάγγελμα{{ autocomplete_autosave_input('patient-profession', patient.profession_name or '', 'profession', 'patients', patient.patient_id, 'profession_id', 'profession_id', patient.profession_id or '', 'profession') }}</label>
       <label class="check-label"><input type="checkbox" class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="is_active" value="1" {% if patient.is_active %}checked{% endif %}> Εμφάνιση στις ενεργές επαφές</label>
       <label class="full">Σημειώσεις<textarea class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="notes">{{ patient.notes or '' }}</textarea></label>
     </div>
   </div>
   <aside class="panel histories-side">
     <h2>Ιστορικά</h2>
-    <div class="history-list">{% for h in histories %}<a href="{{ url_for('history_detail', history_id=h.history_id) }}" class="history-card {% if h.is_active %}active{% endif %}"><strong>#{{ h.history_id }} · {{ h.history_date|grdate }}</strong><span>{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}</span><small>{{ 'Ενεργό' if h.is_active else 'Ανενεργό' }}{% if h.today %} · ΑΥΤΟΣ{% endif %}</small></a>{% else %}<p class="muted">Δεν υπάρχουν ιστορικά.</p>{% endfor %}</div>
+    <div class="history-list">{% for h in histories %}<a href="{{ url_for('history_detail', history_id=h.history_id) }}" class="history-card {% if h.is_active %}active{% endif %}"><strong>#{{ h.history_id }} · {{ h.history_date|grdate }}</strong><span>{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}</span><small>{{ 'Ενεργό' if h.is_active else 'Ανενεργό' }}{% if h.today %} · Ημερήσια{% endif %}</small></a>{% else %}<p class="muted">Δεν υπάρχουν ιστορικά.</p>{% endfor %}</div>
   </aside>
 </section>
 {% endblock %}

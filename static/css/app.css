@@ -15,6 +15,7 @@
 body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #e9edf6; color: var(--text); min-height: 100vh; }
 a { color: inherit; text-decoration: none; }
 button, input, select, textarea { font: inherit; }
+.larger-field-text { font-size: calc(1em + 1px); }
 button:disabled, input:disabled, select:disabled { opacity: .62; cursor: wait; }
 
 .topbar { min-height: 58px; background: var(--blue); color: #fff; display: flex; align-items: center; padding: 8px 22px; gap: 30px; box-shadow: 0 2px 8px #0003; position: sticky; top: 0; z-index: 20; }
@@ -31,7 +32,7 @@ button:disabled, input:disabled, select:disabled { opacity: .62; cursor: wait; }
 .screen-action { width: 34px; height: 34px; display: inline-grid; place-items: center; border: 1px solid #aab5d0; border-radius: 5px; background: #fff; color: #263b77; font-weight: 700; box-shadow: 0 1px 4px #22305c18; }
 .screen-action:hover { background: #eef2fb; }
 .screen-action:focus-visible { outline: 3px solid #6989d055; outline-offset: 2px; }
-.save-status { position: fixed; right: 18px; top: 64px; background: #fff; border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; font-size: 12px; z-index: 30; color: var(--muted); box-shadow: 0 2px 6px #0002; }
+.save-status { margin-left: auto; flex: 0 0 auto; background: #fff; border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; font-size: 12px; color: var(--muted); box-shadow: 0 2px 6px #0002; }
 .save-status.saving { color: var(--warning); }
 .save-status.saved { color: var(--ok); }
 .save-status.error { color: var(--danger); }
@@ -65,6 +66,8 @@ button:disabled, input:disabled, select:disabled { opacity: .62; cursor: wait; }
 .data-table { width: 100%; border-collapse: collapse; background: #fff; }
 .data-table th { position: sticky; top: 0; background: #eef2f9; text-align: left; padding: 10px; border-bottom: 1px solid #c8cfdd; white-space: nowrap; font-weight: 600; z-index: 1; }
 .data-table td { padding: 8px 10px; border-bottom: 1px solid #e3e6ee; vertical-align: middle; }
+.data-table th:not(:last-child) { border-right: 1px solid #c8cfdd; }
+.data-table td:not(:last-child) { border-right: 1px solid #e3e6ee; }
 .data-table tbody tr:hover { background: #f7f9ff; }
 .data-table.compact td, .data-table.compact th { padding: 7px 8px; font-size: 14px; }
 .sort-link { display: inline-flex; align-items: center; gap: 7px; color: #1d2d66; }
@@ -117,20 +120,31 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
 .history-form { max-width: 1100px; }
 
 .current-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
-.current-patients { padding: 16px; max-height: calc(100vh - 95px); overflow: auto; }
+.current-patients { position: sticky; top: 76px; height: calc(100vh - 95px); max-height: calc(100vh - 95px); padding: 16px; display: flex; flex-direction: column; overflow: hidden; }
 .current-patients h2 { margin: 0; }
+.current-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 13px 0; }
+.current-filter { min-height: 42px; display: grid; place-items: center; padding: 7px 6px; border: 1px solid #aebad2; border-radius: 6px; background: #f5f7fc; color: #263b77; font-size: 12px; font-weight: 700; line-height: 1.2; text-align: center; }
+.current-filter:hover, .current-filter:focus-visible { background: #e5ebf8; }
+.current-filter.active { border-color: #3158a4; background: #3158a4; color: #fff; }
+.current-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.current-list-empty { padding: 12px 4px; color: var(--muted); font-size: 13px; }
 .current-item.selected { background: #dce7ff; border-color: #7998df; }
 .current-item span { font-size: 13px; color: #52607b; }
 .current-main { background: #234f80; color: #fff; min-width: 0; }
+.current-empty { align-self: start; }
 .current-header-grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 1px; background: #375f8e; padding: 1px; }
 .current-header-grid > div { background: #f8f8f9; color: #1b2442; padding: 8px; }
 .current-header-grid .label { display: block; font-size: 11px; color: #78829a; margin-bottom: 3px; }
 .history-summary { padding: 12px; }
-.summary-line { display: grid; grid-template-columns: 100px 1fr 110px 120px; gap: 4px; }
+.summary-line { display: grid; grid-template-columns: 1fr; gap: 4px; }
 .summary-line > * { background: #fff; color: #172343; padding: 7px; }
 .problem-box { margin-top: 8px; background: #fff; color: #172343; min-height: 110px; padding: 12px; white-space: pre-wrap; }
-.session-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; }
+.session-toolbar { display: flex; align-items: center; gap: 14px; padding: 8px 12px; }
 .session-toolbar h2 { margin: 0; }
+.session-totals { display: flex; align-items: stretch; justify-content: center; gap: 7px; margin-left: auto; }
+.session-total { min-width: 92px; padding: 5px 10px; border: 1px solid #d3dcee; border-radius: 6px; background: #fff; color: #172343; text-align: center; }
+.session-total span { display: block; margin-bottom: 2px; color: #66728c; font-size: 11px; }
+.session-total strong { font-variant-numeric: tabular-nums; }
 .sessions-wrap { background: #fff; min-height: 380px; }
 .sessions-table th { top: 0; }
 .grid-input { width: 100%; border: 1px solid transparent; background: transparent; padding: 6px; }
@@ -164,7 +178,7 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
   .keyboard-hint { grid-column: 1; }
   .home-mark { display: none; }
   .patient-layout, .current-layout { grid-template-columns: 1fr; }
-  .current-patients { max-height: none; }
+  .current-patients { position: static; height: min(62vh, 520px); max-height: none; }
   .current-header-grid { grid-template-columns: repeat(3, 1fr); }
   .form-grid.two-col { grid-template-columns: 1fr; }
   .form-grid .full { grid-column: auto; }
@@ -185,6 +199,9 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
   .search-form input { min-width: 0; flex: 1 1 180px; }
   .current-header-grid { grid-template-columns: repeat(2, 1fr); }
   .summary-line { grid-template-columns: 1fr; }
+  .session-toolbar { flex-wrap: wrap; }
+  .session-totals { order: 3; width: 100%; margin-left: 0; }
+  .session-total { flex: 1 1 90px; }
   .patient-strip { gap: 10px; }
   .health-grid { grid-template-columns: 1fr; }
   .save-status { top: auto; right: 10px; bottom: 10px; }

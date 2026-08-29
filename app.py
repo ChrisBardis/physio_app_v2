@@ -59,7 +59,7 @@ HISTORY_FORM_COLUMNS = (
 FIELD_LABELS = {
     "first_name": "Όνομα", "last_name": "Επώνυμο", "mobile_phone": "Κινητό",
     "birthdate": "Ημερομηνία γέννησης", "is_active": "Ενεργό",
-    "today": "Εμφάνιση στον ΑΥΤΟΣ", "history_date": "Ημερομηνία ιστορικού",
+    "today": "Εμφάνιση στην Ημερήσια", "history_date": "Ημερομηνία ιστορικού",
     "main_diagnosis": "Κύρια διάγνωση", "problem_description": "Περιγραφή προβλήματος",
     "appointment_number": "Αριθμός συνεδρίας", "appointment_date": "Ημερομηνία συνεδρίας",
     "amount_due": "Χρέωση", "amount_paid": "Πληρωμή", "receipt_number": "Απόδειξη",
@@ -300,9 +300,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def patients():
         q = request.args.get("q", "").strip()
         sort_map = {
-            "patient_id": "patient_id", "first_name": "first_name COLLATE NOCASE",
-            "last_name": "last_name COLLATE NOCASE", "mobile": "mobile_phone",
-            "birthdate": "birthdate", "is_active": "is_active",
+            "patient_id": "p.patient_id", "first_name": "p.first_name COLLATE NOCASE",
+            "last_name": "p.last_name COLLATE NOCASE", "mobile": "p.mobile_phone",
+            "birthdate": "p.birthdate", "history_count": "history_count",
+            "is_active": "p.is_active",
         }
         sort_key, sort_dir = validated_sort(sort_map, "last_name")
         offset = batch_offset()
@@ -310,14 +311,24 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         params: list[Any] = []
         add_normalized_search(
             where, params, q,
-            ("CAST(patient_id AS TEXT)", "first_name", "last_name", "mobile_phone"),
-            prefix_expressions=("first_name", "last_name"),
+            ("CAST(p.patient_id AS TEXT)", "p.first_name", "p.last_name", "p.mobile_phone"),
+            prefix_expressions=("p.first_name", "p.last_name"),
         )
         rows, has_more = batched_query(
             app,
-            "SELECT patient_id, first_name, last_name, mobile_phone, birthdate, is_active",
-            "FROM patients", where, params, sort_map[sort_key], sort_dir,
-            offset, LIST_BATCH_SIZE, "patient_id",
+            """SELECT p.patient_id, p.first_name, p.last_name, p.mobile_phone,
+                      p.birthdate, p.is_active,
+                      COALESCE(hc.history_count, 0) AS history_count,
+                      COALESCE(hc.active_history_count, 0) AS active_history_count""",
+            """FROM patients p
+               LEFT JOIN (
+                   SELECT patient_id, COUNT(*) AS history_count,
+                          SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) AS active_history_count
+                   FROM clinical_histories
+                   GROUP BY patient_id
+               ) hc ON hc.patient_id=p.patient_id""",
+            where, params, sort_map[sort_key], sort_dir,
+            offset, LIST_BATCH_SIZE, "p.patient_id",
         )
         if wants_list_batch():
             return list_batch_response(
@@ -501,6 +512,36 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.route("/current")
     def current():
         history_id = request.args.get("history_id", type=int)
+        current_view = request.args.get("view", "today")
+        current_view_definitions = {
+            "today": {
+                "label": "Ημερήσια",
+                "where": "h.today=1",
+                "empty": "Δεν υπάρχουν ιστορικά με ενεργοποιημένη την επιλογή «Ημερήσια».",
+            },
+            "active_histories": {
+                "label": "Ενεργά ιστορικά",
+                "where": "h.is_active=1",
+                "empty": "Δεν υπάρχουν ενεργά ιστορικά.",
+            },
+            "active_patients": {
+                "label": "Ενεργός ασθενής",
+                "where": "p.is_active=1",
+                "empty": "Δεν υπάρχουν ιστορικά ενεργών ασθενών.",
+            },
+            "all": {
+                "label": "Όλες οι εγγραφές",
+                "where": "1=1",
+                "empty": "Δεν υπάρχουν ιστορικά.",
+            },
+        }
+        if current_view not in current_view_definitions:
+            current_view = "today"
+        current_view_definition = current_view_definitions[current_view]
+        current_filters = [
+            (key, definition["label"])
+            for key, definition in current_view_definitions.items()
+        ]
         sort_map = {
             "number": "a.appointment_number", "date": "a.appointment_date",
             "due": "pay.amount_due", "paid": "pay.amount_paid",
@@ -508,16 +549,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         }
         sort_key, sort_dir = validated_sort(sort_map, "number")
         with db_conn(app) as con:
-            current_rows = con.execute("""
+            current_rows = con.execute(f"""
                 SELECT h.history_id, h.patient_id, h.history_date, h.main_diagnosis,
                        p.first_name, p.last_name
                 FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
-                WHERE h.today=1
+                WHERE {current_view_definition["where"]}
                 ORDER BY p.last_name COLLATE NOCASE, p.first_name COLLATE NOCASE, h.history_date DESC
             """).fetchall()
             if not current_rows:
                 return render_template(
                     "current.html", current_rows=[], history=None, appointments=[],
+                    appointment_totals={"due": 0.0, "credit": 0.0, "receipts": 0.0},
+                    current_view=current_view, current_view_label=current_view_definition["label"],
+                    current_empty_message=current_view_definition["empty"], current_filters=current_filters,
                     current_sort=sort_key, current_dir=sort_dir,
                 )
             valid_ids = {row["history_id"] for row in current_rows}
@@ -542,8 +586,29 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 WHERE a.history_id=?
                 ORDER BY {sort_map[sort_key]} {sort_dir.upper()}, a.appointment_id
             """, (history_id,)).fetchall()
+
+        def appointment_total(column: str) -> float:
+            total = 0.0
+            for appointment in appointments:
+                raw_value = appointment[column]
+                if raw_value in (None, ""):
+                    continue
+                try:
+                    total += float(str(raw_value).strip().replace(",", "."))
+                except ValueError:
+                    continue
+            return total
+
+        appointment_totals = {
+            "due": appointment_total("amount_due"),
+            "credit": appointment_total("amount_paid"),
+            "receipts": appointment_total("receipt_number"),
+        }
         return render_template(
             "current.html", current_rows=current_rows, history=history, appointments=appointments,
+            appointment_totals=appointment_totals,
+            current_view=current_view, current_view_label=current_view_definition["label"],
+            current_empty_message=current_view_definition["empty"], current_filters=current_filters,
             current_sort=sort_key, current_dir=sort_dir,
         )
 
@@ -649,6 +714,59 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return jsonify(ok=True, value=value)
         except sqlite3.IntegrityError:
             return jsonify(ok=False, error="Η τιμή παραβιάζει σχέση της βάσης δεδομένων"), 400
+
+    @app.post("/api/related-choice")
+    def api_related_choice():
+        payload = json_payload()
+        table = payload.get("table")
+        column = payload.get("column")
+        kind = payload.get("kind")
+        if (table, column, kind) != ("patients", "profession_id", "profession"):
+            return jsonify(ok=False, error="Μη επιτρεπτό συσχετισμένο πεδίο"), 400
+        try:
+            pk = int(payload.get("pk"))
+            if pk <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="Μη έγκυρη εγγραφή"), 400
+
+        try:
+            with write_transaction(app) as con:
+                old_row = con.execute(
+                    "SELECT profession_id FROM patients WHERE patient_id=?", (pk,)
+                ).fetchone()
+                if not old_row:
+                    return jsonify(ok=False, error="Η εγγραφή δεν βρέθηκε"), 404
+                old = old_row[0]
+                profession_id, new_profession = resolve_related_choice(
+                    con, "profession", payload.get("value"), payload.get("text"),
+                )
+                value = normalize_value("patients", "profession_id", profession_id)
+                display = ""
+                if value is not None:
+                    display_row = con.execute(
+                        "SELECT profession_name FROM professions WHERE profession_id=?",
+                        (value,),
+                    ).fetchone()
+                    if not display_row:
+                        raise ValidationError("Το επάγγελμα δεν βρέθηκε")
+                    display = display_row[0]
+                if equivalent(old, value):
+                    return jsonify(ok=True, unchanged=True, value=value, display=display)
+                con.execute(
+                    "UPDATE patients SET profession_id=?, updated_at=CURRENT_TIMESTAMP "
+                    "WHERE patient_id=?",
+                    (value, pk),
+                )
+                log_change(
+                    con, app, "update_related", "patients", "patient_id", pk,
+                    "profession_id", old,
+                    {"value": value, "created_related": [new_profession] if new_profession else []},
+                    describe_update("patients", "profession_id", pk),
+                )
+            return jsonify(ok=True, value=value, display=display)
+        except (ValidationError, sqlite3.IntegrityError) as exc:
+            return jsonify(ok=False, error=str(exc)), 400
 
     @app.post("/api/activate/<int:history_id>")
     def api_activate(history_id: int):

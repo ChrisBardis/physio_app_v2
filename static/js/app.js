@@ -111,6 +111,24 @@ async function ensurePayment(element) {
   return paymentId;
 }
 
+function updateSessionTotals() {
+  const columns = {
+    due: 'amount_due',
+    credit: 'amount_paid',
+    receipts: 'receipt_number',
+  };
+  Object.entries(columns).forEach(([totalName, column]) => {
+    const output = document.querySelector(`[data-session-total="${totalName}"]`);
+    if (!output) return;
+    const total = Array.from(document.querySelectorAll(`.payment-input[data-column="${column}"]`))
+      .reduce((sum, input) => {
+        const value = Number.parseFloat(String(input.value || '0').trim().replace(',', '.'));
+        return sum + (Number.isFinite(value) ? value : 0);
+      }, 0);
+    output.textContent = total.toFixed(2);
+  });
+}
+
 function bindPayment(element) {
   if (element.dataset.paymentBound === 'true') return;
   element.dataset.paymentBound = 'true';
@@ -138,6 +156,7 @@ function bindPayment(element) {
     } finally {
       pendingSaves = Math.max(0, pendingSaves - 1);
       element.disabled = false;
+      updateSessionTotals();
     }
   });
 }
@@ -156,8 +175,24 @@ function suppressBrowserAutocomplete(root = document) {
   });
 }
 
+function enlargeFieldTextWithoutResizing(root = document) {
+  root.querySelectorAll(
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), select, textarea',
+  ).forEach(field => {
+    if (field.dataset.fieldTextEnlarged === 'true') return;
+    const originalRect = field.getBoundingClientRect();
+    field.style.height = `${originalRect.height}px`;
+    if (field.classList.contains('grid-input')) {
+      field.style.width = `${originalRect.width}px`;
+    }
+    field.classList.add('larger-field-text');
+    field.dataset.fieldTextEnlarged = 'true';
+  });
+}
+
 function initializeInteractiveElements(root = document) {
   suppressBrowserAutocomplete(root);
+  enlargeFieldTextWithoutResizing(root);
   root.querySelectorAll('.autosave').forEach(bindAutosave);
   root.querySelectorAll('.payment-input').forEach(bindPayment);
 }
@@ -201,7 +236,7 @@ function hasUnsavedChanges() {
   for (const state of dirtyFormStates.values()) {
     if (state.dirty && !state.submitted) return true;
   }
-  return Array.from(document.querySelectorAll('.autosave, .payment-input'))
+  return Array.from(document.querySelectorAll('.autosave, .payment-input, .related-autosave'))
     .some(autosaveElementIsDirty);
 }
 
@@ -237,12 +272,17 @@ function bindAutocomplete(input) {
   const menu = control?.querySelector('.autocomplete-menu');
   const toggle = control?.querySelector('.autocomplete-toggle');
   const hiddenId = control?.querySelector('[data-autocomplete-id]');
+  const createKind = input.dataset.autocompleteCreate || '';
   if (!menu) return;
 
   let suggestions = [];
   let activeIndex = -1;
   let timer = null;
   let controller = null;
+  let relatedSaving = false;
+  let relatedOriginalText = input.value;
+  let relatedOriginalId = hiddenId?.value || '';
+  if (createKind) rememberOriginal(input);
 
   const close = () => {
     menu.hidden = true;
@@ -267,13 +307,56 @@ function bindAutocomplete(input) {
     }
   };
 
+  const saveRelatedChoice = async () => {
+    if (!createKind || !hiddenId || relatedSaving) return;
+    const text = input.value.trim();
+    const selectedId = hiddenId.value;
+    if (text === relatedOriginalText && selectedId === relatedOriginalId) return;
+    relatedSaving = true;
+    pendingSaves += 1;
+    setStatus('Αποθήκευση…', 'saving');
+    input.disabled = true;
+    if (toggle) toggle.disabled = true;
+    try {
+      const result = await postJSON('/api/related-choice', {
+        table: input.dataset.table,
+        pk: input.dataset.pk,
+        column: input.dataset.column,
+        kind: createKind,
+        value: selectedId,
+        text,
+      });
+      input.value = result.display || '';
+      hiddenId.value = result.value ?? '';
+      relatedOriginalText = input.value;
+      relatedOriginalId = hiddenId.value;
+      rememberOriginal(input);
+      rememberOriginal(hiddenId);
+      setStatus('Αποθηκεύτηκε', 'saved');
+    } catch (error) {
+      input.value = relatedOriginalText;
+      hiddenId.value = relatedOriginalId;
+      rememberOriginal(input);
+      rememberOriginal(hiddenId);
+      input.classList.add('field-error');
+      setStatus('Δεν αποθηκεύτηκε', 'error');
+      toast(error.message);
+    } finally {
+      pendingSaves = Math.max(0, pendingSaves - 1);
+      relatedSaving = false;
+      input.disabled = false;
+      if (toggle) toggle.disabled = false;
+    }
+  };
+
   const choose = index => {
     const selected = suggestions[index];
     if (!selected) return;
     input.value = selected.value;
     if (hiddenId) {
       hiddenId.value = selected.id ?? '';
-      saveElement(hiddenId);
+      if (createKind) saveRelatedChoice();
+      else saveElement(hiddenId);
     }
     close();
     input.dispatchEvent(new Event('change', {bubbles: true}));
@@ -322,7 +405,7 @@ function bindAutocomplete(input) {
   input.addEventListener('input', () => {
     if (hiddenId) {
       hiddenId.value = '';
-      if (!input.value.trim()) saveElement(hiddenId);
+      if (!createKind && !input.value.trim()) saveElement(hiddenId);
     }
     window.clearTimeout(timer);
     timer = window.setTimeout(load, 160);
@@ -337,13 +420,20 @@ function bindAutocomplete(input) {
     } else if (event.key === 'Enter' && activeIndex >= 0) {
       event.preventDefault();
       choose(activeIndex);
+    } else if (event.key === 'Enter' && createKind) {
+      event.preventDefault();
+      close();
+      saveRelatedChoice();
     } else if (event.key === 'Escape' && !menu.hidden) {
       event.preventDefault();
       event.stopPropagation();
       close();
     }
   });
-  input.addEventListener('blur', () => window.setTimeout(close, 120));
+  input.addEventListener('blur', () => {
+    window.setTimeout(close, 120);
+    if (createKind) window.setTimeout(saveRelatedChoice, 130);
+  });
   toggle?.addEventListener('pointerdown', event => event.preventDefault());
   toggle?.addEventListener('click', () => {
     if (!menu.hidden) {
@@ -358,6 +448,7 @@ function bindAutocomplete(input) {
 document.querySelectorAll('[data-autocomplete]').forEach(bindAutocomplete);
 document.querySelectorAll('[data-dirty-form]').forEach(bindDirtyForm);
 initializeInteractiveElements();
+updateSessionTotals();
 
 document.addEventListener('click', async event => {
   const activateButton = event.target.closest('.activate-history');
@@ -450,7 +541,7 @@ document.getElementById('undo-button')?.addEventListener('click', performUndo);
 document.addEventListener('keydown', async event => {
   if (event.key !== 'Escape' || undoBusy || event.defaultPrevented) return;
   const active = document.activeElement;
-  if (active && (active.classList?.contains('autosave') || active.classList?.contains('payment-input'))) {
+  if (active && (active.classList?.contains('autosave') || active.classList?.contains('payment-input') || active.classList?.contains('related-autosave'))) {
     if (restoreOriginal(active)) {
       event.preventDefault();
       return;

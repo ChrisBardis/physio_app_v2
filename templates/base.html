@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ΦΥΣΙΟ{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260829-no-browser-autofill') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260829-sticky-current-filters') }}">
   <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body>
@@ -13,14 +13,14 @@
     <button id="nav-toggle" class="nav-toggle" type="button" aria-expanded="false" aria-controls="main-nav">Μενού</button>
     <nav id="main-nav">
       <a href="{{ url_for('active_histories') }}">Ενεργά ιστορικά</a>
-      <a href="{{ url_for('current') }}">ΑΥΤΟΣ</a>
+      <a href="{{ url_for('current') }}">Ημερήσια</a>
       <a href="{{ url_for('patients') }}">Ασθενείς</a>
       <a href="{{ url_for('activation') }}">Ενεργοποίηση</a>
       <a href="{{ url_for('settings') }}">Ρυθμίσεις</a>
       <button id="undo-button" class="nav-action" type="button">Αναίρεση</button>
     </nav>
+    <div id="save-status" class="save-status">Έτοιμο</div>
   </header>
-  <div id="save-status" class="save-status">Έτοιμο</div>
   <main class="page-shell">
     {% if request.endpoint != 'home' %}
     <div class="screen-actions" aria-label="Ενέργειες οθόνης">
@@ -31,7 +31,7 @@
     {% block content %}{% endblock %}
   </main>
   <div id="toast" class="toast" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='js/app.js', v='20260829-no-browser-autofill') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js', v='20260829-session-totals') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -272,6 +272,32 @@ def undo_last_change(app: Any) -> str:
                 f'WHERE "{pk_name}"=?',
                 (old, pk_value),
             )
+        elif operation == "update_related":
+            column = change["column_name"]
+            if column not in ALLOWED_COLUMNS.get(table, set()):
+                raise ValidationError("Μη ασφαλές πεδίο Undo")
+            old = json.loads(change["old_value"])
+            extra = json.loads(change["extra_json"] or "{}")
+            con.execute(
+                f'UPDATE "{table}" SET "{column}"=?, updated_at=CURRENT_TIMESTAMP '
+                f'WHERE "{pk_name}"=?',
+                (old, pk_value),
+            )
+            related_allowlist = {
+                ("referrals", "referral_id"),
+                ("professions", "profession_id"),
+                ("doctors", "doctor_id"),
+            }
+            for related in reversed(extra.get("created_related", [])):
+                related_table = related.get("table")
+                related_pk = related.get("pk_name")
+                related_value = related.get("pk_value")
+                if (related_table, related_pk) not in related_allowlist:
+                    raise ValidationError("Μη ασφαλής συσχετισμένη εγγραφή Undo")
+                con.execute(
+                    f'DELETE FROM "{related_table}" WHERE "{related_pk}"=?',
+                    (related_value,),
+                )
         elif operation == "insert":
             con.execute(f'DELETE FROM "{table}" WHERE "{pk_name}"=?', (pk_value,))
             extra = json.loads(change["extra_json"] or "{}")
