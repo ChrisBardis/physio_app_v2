@@ -5,8 +5,10 @@
   <div class="panel settings-panel">
     <h1>Ρυθμίσεις</h1>
     <p>Οι ρυθμίσεις και το Undo αποθηκεύονται χωριστά από την κλινική βάση.</p>
-    <label class="setting-row"><span>Προεπιλεγμένο ποσό νέας συνεδρίας (€)</span><input id="default-amount" type="number" min="0" max="1000000" step="0.01" value="{{ default_amount }}"></label>
-    <p class="muted">Το ποσό συμπληρώνεται αυτόματα και μπορεί να αλλάξει ανά συνεδρία.</p>
+    <div class="setting-rule">
+      <strong>Αυτόματη χρέωση νέας συνεδρίας</strong>
+      <p>Χρησιμοποιείται η χρέωση της προηγούμενης συνεδρίας. Στην πρώτη συνεδρία η χρέωση είναι 10,00 € για ΓΕΣΥ και 35,00 € για κάθε άλλη κοινωνική ασφάλιση.</p>
+    </div>
   </div>
   <div class="panel settings-panel">
     <h2>Αντίγραφα ασφαλείας</h2>

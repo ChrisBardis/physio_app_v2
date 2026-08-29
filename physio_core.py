@@ -272,6 +272,35 @@ def undo_last_change(app: Any) -> str:
                 f'WHERE "{pk_name}"=?',
                 (old, pk_value),
             )
+        elif operation == "update_status_cascade":
+            column = change["column_name"]
+            if (table, column) not in {
+                ("patients", "is_active"),
+                ("clinical_histories", "is_active"),
+            }:
+                raise ValidationError("Μη ασφαλής αλλαγή κατάστασης Undo")
+            old = json.loads(change["old_value"])
+            extra = json.loads(change["extra_json"] or "{}")
+            con.execute(
+                f'UPDATE "{table}" SET "{column}"=?, updated_at=CURRENT_TIMESTAMP '
+                f'WHERE "{pk_name}"=?',
+                (old, pk_value),
+            )
+            history_ids = extra.get("cleared_today_history_ids", [])
+            if not isinstance(history_ids, list) or any(
+                not isinstance(history_id, int) or history_id <= 0
+                for history_id in history_ids
+            ):
+                raise ValidationError("Μη ασφαλή ιστορικά Undo")
+            for history_id in history_ids:
+                con.execute("""
+                    UPDATE clinical_histories SET today=1, updated_at=CURRENT_TIMESTAMP
+                    WHERE history_id=? AND is_active=1
+                      AND EXISTS (
+                          SELECT 1 FROM patients p
+                          WHERE p.patient_id=clinical_histories.patient_id AND p.is_active=1
+                      )
+                """, (history_id,))
         elif operation == "update_related":
             column = change["column_name"]
             if column not in ALLOWED_COLUMNS.get(table, set()):

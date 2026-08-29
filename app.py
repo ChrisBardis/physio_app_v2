@@ -217,7 +217,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "SELECT COUNT(*) FROM clinical_histories WHERE is_active=1"
                 ).fetchone()[0],
                 "current": con.execute(
-                    "SELECT COUNT(*) FROM clinical_histories WHERE today=1"
+                    """SELECT COUNT(*)
+                       FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
+                       WHERE h.today=1 AND h.is_active=1 AND p.is_active=1"""
                 ).fetchone()[0],
             }
         return render_template("home.html", stats=stats)
@@ -227,8 +229,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         q = request.args.get("q", "").strip()
         sort_map = {
             "patient_id": "p.patient_id", "history_id": "h.history_id",
-            "first_name": "p.first_name COLLATE NOCASE", "last_name": "p.last_name COLLATE NOCASE",
-            "history_date": "h.history_date", "diagnosis": "h.main_diagnosis COLLATE NOCASE",
+            "first_name": "PYCASEFOLD(p.first_name)", "last_name": "PYCASEFOLD(p.last_name)",
+            "history_date": "h.history_date", "diagnosis": "PYCASEFOLD(h.main_diagnosis)",
             "mobile": "p.mobile_phone", "patient_active": "p.is_active", "today": "h.today",
         }
         sort_key, sort_dir = validated_sort(sort_map, "last_name")
@@ -265,8 +267,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         q = request.args.get("q", "").strip()
         sort_map = {
             "patient_id": "p.patient_id", "history_id": "h.history_id",
-            "first_name": "p.first_name COLLATE NOCASE", "last_name": "p.last_name COLLATE NOCASE",
-            "history_date": "h.history_date", "diagnosis": "h.main_diagnosis COLLATE NOCASE",
+            "first_name": "PYCASEFOLD(p.first_name)", "last_name": "PYCASEFOLD(p.last_name)",
+            "history_date": "h.history_date", "diagnosis": "PYCASEFOLD(h.main_diagnosis)",
             "home_phone": "p.home_phone", "mobile": "p.mobile_phone",
         }
         sort_key, sort_dir = validated_sort(sort_map, "history_date", "desc")
@@ -300,8 +302,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def patients():
         q = request.args.get("q", "").strip()
         sort_map = {
-            "patient_id": "p.patient_id", "first_name": "p.first_name COLLATE NOCASE",
-            "last_name": "p.last_name COLLATE NOCASE", "mobile": "p.mobile_phone",
+            "patient_id": "p.patient_id", "first_name": "PYCASEFOLD(p.first_name)",
+            "last_name": "PYCASEFOLD(p.last_name)", "mobile": "p.mobile_phone",
             "birthdate": "p.birthdate", "history_count": "history_count",
             "is_active": "p.is_active",
         }
@@ -462,6 +464,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 if column != "doctor_id"
             }
             normalized["history_date"] = normalized["history_date"] or date.today().isoformat()
+            if normalized["is_active"] != 1:
+                normalized["today"] = 0
             columns = ["patient_id", *HISTORY_FORM_COLUMNS]
             with write_transaction(app) as con:
                 doctor_id, new_doctor = resolve_related_choice(
@@ -505,7 +509,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if not history:
                 abort(404)
             doctors = con.execute(
-                "SELECT doctor_id, first_name, last_name, specialty FROM doctors ORDER BY last_name, first_name"
+                """SELECT doctor_id, first_name, last_name, specialty FROM doctors
+                   ORDER BY PYCASEFOLD(last_name), PYCASEFOLD(first_name), doctor_id"""
             ).fetchall()
         return render_template("history.html", history=history, doctors=doctors)
 
@@ -516,7 +521,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         current_view_definitions = {
             "today": {
                 "label": "Ημερήσια",
-                "where": "h.today=1",
+                "where": "h.today=1 AND h.is_active=1 AND p.is_active=1",
                 "empty": "Δεν υπάρχουν ιστορικά με ενεργοποιημένη την επιλογή «Ημερήσια».",
             },
             "active_histories": {
@@ -545,7 +550,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         sort_map = {
             "number": "a.appointment_number", "date": "a.appointment_date",
             "due": "pay.amount_due", "paid": "pay.amount_paid",
-            "receipt": "pay.receipt_number COLLATE NOCASE", "notes": "a.notes COLLATE NOCASE",
+            "receipt": "PYCASEFOLD(pay.receipt_number)", "notes": "PYCASEFOLD(a.notes)",
         }
         sort_key, sort_dir = validated_sort(sort_map, "number")
         with db_conn(app) as con:
@@ -554,7 +559,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                        p.first_name, p.last_name
                 FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
                 WHERE {current_view_definition["where"]}
-                ORDER BY p.last_name COLLATE NOCASE, p.first_name COLLATE NOCASE, h.history_date DESC
+                ORDER BY PYCASEFOLD(p.last_name), PYCASEFOLD(p.first_name),
+                         h.history_date DESC, p.patient_id, h.history_id
             """).fetchall()
             if not current_rows:
                 return render_template(
@@ -615,8 +621,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.route("/settings")
     def settings():
         return render_template(
-            "settings.html", default_amount=get_setting(app, "default_amount_due", "35.00"),
-            health=data_health(app), backup=backup_status(app), database_path=app.config["DB_PATH"],
+            "settings.html", health=data_health(app), backup=backup_status(app),
+            database_path=app.config["DB_PATH"],
         )
 
     @app.get("/api/autocomplete")
@@ -701,16 +707,59 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 if not old_row:
                     return jsonify(ok=False, error="Η εγγραφή δεν βρέθηκε"), 404
                 old = old_row[0]
-                if equivalent(old, value):
+
+                if table == "clinical_histories" and column == "today" and value == 1:
+                    eligibility = con.execute("""
+                        SELECT h.is_active AS history_active, p.is_active AS patient_active
+                        FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
+                        WHERE h.history_id=?
+                    """, (pk,)).fetchone()
+                    if not eligibility or eligibility["history_active"] != 1 or eligibility["patient_active"] != 1:
+                        return jsonify(
+                            ok=False,
+                            error="Η Ημερήσια επιλογή επιτρέπεται μόνο σε ενεργό ιστορικό ενεργού ασθενή",
+                        ), 400
+
+                cleared_today_history_ids: list[int] = []
+                if column == "is_active" and value == 0:
+                    if table == "patients":
+                        cleared_today_history_ids = [
+                            row["history_id"] for row in con.execute(
+                                "SELECT history_id FROM clinical_histories WHERE patient_id=? AND today=1",
+                                (pk,),
+                            ).fetchall()
+                        ]
+                    elif table == "clinical_histories":
+                        today_row = con.execute(
+                            "SELECT today FROM clinical_histories WHERE history_id=?", (pk,)
+                        ).fetchone()
+                        if today_row and today_row["today"] == 1:
+                            cleared_today_history_ids = [pk]
+
+                if equivalent(old, value) and not cleared_today_history_ids:
                     return jsonify(ok=True, unchanged=True, value=value)
-                con.execute(
-                    f'UPDATE "{table}" SET "{column}"=?, updated_at=CURRENT_TIMESTAMP WHERE "{pk_name}"=?',
-                    (value, pk),
-                )
-                log_change(
-                    con, app, "update", table, pk_name, pk, column, old, value,
-                    describe_update(table, column, pk),
-                )
+                if not equivalent(old, value):
+                    con.execute(
+                        f'UPDATE "{table}" SET "{column}"=?, updated_at=CURRENT_TIMESTAMP WHERE "{pk_name}"=?',
+                        (value, pk),
+                    )
+                if cleared_today_history_ids:
+                    placeholders = ",".join("?" for _ in cleared_today_history_ids)
+                    con.execute(
+                        f"UPDATE clinical_histories SET today=0, updated_at=CURRENT_TIMESTAMP "
+                        f"WHERE history_id IN ({placeholders})",
+                        cleared_today_history_ids,
+                    )
+                    log_change(
+                        con, app, "update_status_cascade", table, pk_name, pk, column, old,
+                        {"value": value, "cleared_today_history_ids": cleared_today_history_ids},
+                        describe_update(table, column, pk),
+                    )
+                else:
+                    log_change(
+                        con, app, "update", table, pk_name, pk, column, old, value,
+                        describe_update(table, column, pk),
+                    )
             return jsonify(ok=True, value=value)
         except sqlite3.IntegrityError:
             return jsonify(ok=False, error="Η τιμή παραβιάζει σχέση της βάσης δεδομένων"), 400
@@ -802,31 +851,42 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def api_deactivate(history_id: int):
         with write_transaction(app) as con:
             row = con.execute(
-                "SELECT is_active FROM clinical_histories WHERE history_id=?", (history_id,)
+                "SELECT is_active, today FROM clinical_histories WHERE history_id=?", (history_id,)
             ).fetchone()
             if not row:
                 return jsonify(ok=False, error="Το ιστορικό δεν βρέθηκε"), 404
-            old = row[0]
-            if old != 0:
+            old = row["is_active"]
+            cleared_today_history_ids = [history_id] if row["today"] == 1 else []
+            if old != 0 or cleared_today_history_ids:
                 con.execute(
-                    "UPDATE clinical_histories SET is_active=0, updated_at=CURRENT_TIMESTAMP WHERE history_id=?",
+                    "UPDATE clinical_histories SET is_active=0, today=0, updated_at=CURRENT_TIMESTAMP WHERE history_id=?",
                     (history_id,),
                 )
-                log_change(
-                    con, app, "update", "clinical_histories", "history_id", history_id,
-                    "is_active", old, 0, f"Απενεργοποίηση ιστορικού #{history_id}",
-                )
+                if cleared_today_history_ids:
+                    log_change(
+                        con, app, "update_status_cascade", "clinical_histories", "history_id", history_id,
+                        "is_active", old,
+                        {"value": 0, "cleared_today_history_ids": cleared_today_history_ids},
+                        f"Απενεργοποίηση ιστορικού #{history_id}",
+                    )
+                else:
+                    log_change(
+                        con, app, "update", "clinical_histories", "history_id", history_id,
+                        "is_active", old, 0, f"Απενεργοποίηση ιστορικού #{history_id}",
+                    )
         return jsonify(ok=True)
 
     @app.post("/api/appointment/new/<int:history_id>")
     def api_new_appointment(history_id: int):
-        try:
-            default_due = float(validate_default_amount(get_setting(app, "default_amount_due", "35.00")))
-        except ValidationError as exc:
-            return jsonify(ok=False, error=str(exc)), 400
         with write_transaction(app) as con:
-            if not con.execute("SELECT 1 FROM clinical_histories WHERE history_id=?", (history_id,)).fetchone():
+            try:
+                default_due = automatic_appointment_due(con, history_id)
+            except LookupError:
                 return jsonify(ok=False, error="Το ιστορικό δεν βρέθηκε"), 404
+            except ValidationError as exc:
+                return jsonify(
+                    ok=False, error=f"Η χρέωση της προηγούμενης συνεδρίας δεν είναι έγκυρη: {exc}",
+                ), 400
             next_no = con.execute(
                 "SELECT COALESCE(MAX(appointment_number),0)+1 FROM appointments WHERE history_id=?",
                 (history_id,),
@@ -855,7 +915,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/api/payment/ensure/<int:appointment_id>")
     def api_payment_ensure(appointment_id: int):
-        default_due = float(validate_default_amount(get_setting(app, "default_amount_due", "35.00")))
         with write_transaction(app) as con:
             row = con.execute(
                 "SELECT payment_id FROM payments WHERE appointment_id=? ORDER BY payment_id LIMIT 1",
@@ -864,14 +923,24 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if row:
                 return jsonify(ok=True, payment_id=row[0])
             appointment = con.execute(
-                "SELECT appointment_date FROM appointments WHERE appointment_id=?", (appointment_id,)
+                """SELECT history_id, appointment_number, appointment_date
+                   FROM appointments WHERE appointment_id=?""",
+                (appointment_id,),
             ).fetchone()
             if not appointment:
                 return jsonify(ok=False, error="Η συνεδρία δεν βρέθηκε"), 404
+            try:
+                default_due = automatic_appointment_due(
+                    con, appointment["history_id"],
+                    before_appointment_number=appointment["appointment_number"],
+                    before_appointment_id=appointment_id,
+                )
+            except (LookupError, ValidationError) as exc:
+                return jsonify(ok=False, error=f"Δεν υπολογίστηκε η αυτόματη χρέωση: {exc}"), 400
             cur = con.execute("""
                 INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_number)
                 VALUES(?,?,?,?,?)
-            """, (appointment_id, appointment[0], default_due, 0, "0"))
+            """, (appointment_id, appointment["appointment_date"], default_due, 0, "0"))
             payment_id = cur.lastrowid
             log_change(
                 con, app, "insert", "payments", "payment_id", payment_id, None, None,
@@ -1054,6 +1123,52 @@ def resolve_related_choice(
     return new_id, {
         "table": config["table"], "pk_name": config["pk"], "pk_value": new_id,
     }
+
+
+def automatic_appointment_due(
+    con: sqlite3.Connection, history_id: int,
+    *, before_appointment_number: int | None = None, before_appointment_id: int | None = None,
+) -> float:
+    history = con.execute(
+        "SELECT social_security FROM clinical_histories WHERE history_id=?", (history_id,)
+    ).fetchone()
+    if not history:
+        raise LookupError("Το ιστορικό δεν βρέθηκε")
+
+    where = ["a.history_id=?", "pay.amount_due IS NOT NULL"]
+    params: list[Any] = [history_id]
+    if before_appointment_id is not None:
+        if before_appointment_number is not None:
+            where.append("""
+                (a.appointment_number < ? OR
+                 (a.appointment_number = ? AND a.appointment_id < ?))
+            """)
+            params.extend([
+                before_appointment_number, before_appointment_number, before_appointment_id,
+            ])
+        else:
+            where.append("a.appointment_id < ?")
+            params.append(before_appointment_id)
+
+    previous_due = con.execute(f"""
+        SELECT pay.amount_due
+        FROM appointments a
+        JOIN payments pay ON pay.payment_id = (
+            SELECT p2.payment_id FROM payments p2
+            WHERE p2.appointment_id=a.appointment_id
+            ORDER BY p2.payment_id LIMIT 1
+        )
+        WHERE {' AND '.join(where)}
+        ORDER BY COALESCE(a.appointment_number, 0) DESC, a.appointment_id DESC
+        LIMIT 1
+    """, params).fetchone()
+    if previous_due:
+        return float(validate_default_amount(previous_due["amount_due"]))
+    return (
+        10.0
+        if normalize_search_text(history["social_security"]) == normalize_search_text("ΓΕΣΥ")
+        else 35.0
+    )
 
 
 def describe_update(table: str, column: str, pk: int) -> str:

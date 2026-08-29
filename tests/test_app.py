@@ -152,6 +152,99 @@ class PhysioAppTests(unittest.TestCase):
         self.assertGreater(body["appointment_id"], 0)
         self.assertGreater(body["payment_id"], 0)
 
+    def test_new_appointment_uses_previous_charge(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute("UPDATE clinical_histories SET social_security='ΓΕΣΥ' WHERE history_id=1")
+        con.execute("UPDATE payments SET amount_due=27.5 WHERE appointment_id=1")
+        con.commit()
+        con.close()
+
+        response = self.client.post(
+            "/api/appointment/new/1", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["amount_due"], 27.5)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT amount_due FROM payments WHERE payment_id=?",
+                (response.get_json()["payment_id"],),
+            ).fetchone()[0],
+            27.5,
+        )
+        con.close()
+
+    def test_first_appointment_charge_depends_on_social_security(self):
+        con = sqlite3.connect(self.db_path)
+        con.executemany(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,social_security,is_active,today) VALUES(?,?,?,?,1,0)",
+            [
+                (2, 2, "2026-08-22", "γεσύ"),
+                (3, 2, "2026-08-23", "Ιδιωτική ασφάλιση"),
+                (4, 2, "2026-08-24", None),
+            ],
+        )
+        con.commit()
+        con.close()
+
+        expected = {2: 10.0, 3: 35.0, 4: 35.0}
+        for history_id, amount_due in expected.items():
+            with self.subTest(history_id=history_id):
+                response = self.client.post(
+                    f"/api/appointment/new/{history_id}", json={}, headers=self.api_headers(),
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["amount_due"], amount_due)
+
+    def test_missing_payment_uses_previous_session_charge(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute("UPDATE payments SET amount_due=22.5 WHERE appointment_id=1")
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) VALUES(2,1,2,'2026-08-22')"
+        )
+        con.commit()
+        con.close()
+
+        response = self.client.post(
+            "/api/payment/ensure/2", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT amount_due FROM payments WHERE appointment_id=2"
+            ).fetchone()[0],
+            22.5,
+        )
+        con.close()
+
+    def test_missing_first_payment_uses_social_security_charge(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute("UPDATE clinical_histories SET social_security='ΓεΣυ' WHERE history_id=1")
+        con.execute("DELETE FROM payments WHERE appointment_id=1")
+        con.commit()
+        con.close()
+
+        response = self.client.post(
+            "/api/payment/ensure/1", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT amount_due FROM payments WHERE appointment_id=1"
+            ).fetchone()[0],
+            10.0,
+        )
+        con.close()
+
+    def test_settings_explains_automatic_session_charge_rule(self):
+        html = self.client.get("/settings").get_data(as_text=True)
+        self.assertIn("Χρησιμοποιείται η χρέωση της προηγούμενης συνεδρίας", html)
+        self.assertIn("10,00 € για ΓΕΣΥ", html)
+        self.assertIn("35,00 €", html)
+        self.assertNotIn('id="default-amount"', html)
+
     def test_dates_display_in_day_month_year_and_save_as_iso(self):
         patient = self.client.get("/patients/1").get_data(as_text=True)
         history = self.client.get("/histories/1").get_data(as_text=True)
@@ -214,6 +307,37 @@ class PhysioAppTests(unittest.TestCase):
         self.assertNotIn("Z→A", html)
         self.assertIn("↓", html)
         self.assertIn("Ταξινόμηση φθίνουσα", html)
+
+    def test_greek_sorting_ignores_lowercase_uppercase_and_tonos(self):
+        con = sqlite3.connect(self.db_path)
+        con.executemany(
+            "INSERT INTO patients(patient_id,first_name,last_name,is_active) VALUES(?,?,?,?)",
+            [
+                (3, "ΔΟΚΙΜΗ", "βήτα", 1),
+                (4, "ΔΟΚΙΜΗ", "ΓΑΜΑ", 1),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,is_active,today) VALUES(?,?,?,?,?)",
+            [
+                (2, 2, "2026-08-21", 1, 1),
+                (3, 3, "2026-08-22", 1, 1),
+                (4, 4, "2026-08-23", 1, 1),
+            ],
+        )
+        con.commit()
+        con.close()
+
+        for path in (
+            "/patients?sort=last_name&dir=asc",
+            "/active?sort=last_name&dir=asc",
+            "/current?view=today",
+        ):
+            with self.subTest(path=path):
+                html = self.client.get(path).get_data(as_text=True)
+                self.assertLess(html.index("ΑΝΔΡΕΟΥ"), html.index("βήτα"))
+                self.assertLess(html.index("βήτα"), html.index("ΓΑΜΑ"))
+                self.assertLess(html.index("ΓΑΜΑ"), html.index("ΖΗΝΩΝ"))
 
     def test_home_launcher_order_and_today_label(self):
         html = self.client.get("/").get_data(as_text=True)
@@ -504,9 +628,9 @@ class PhysioAppTests(unittest.TestCase):
         con.executemany(
             "INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) VALUES(?,?,?,?,?,?)",
             [
-                (2, 1, "2026-08-21", "Ανενεργό ιστορικό ενεργού ασθενή", 0, 0),
+                (2, 1, "2026-08-21", "Ανενεργό ιστορικό ενεργού ασθενή", 0, 1),
                 (3, 2, "2026-08-22", "Ενεργό ιστορικό ενεργού ασθενή", 1, 0),
-                (4, 3, "2026-08-23", "Ενεργό ιστορικό ανενεργού ασθενή", 1, 0),
+                (4, 3, "2026-08-23", "Ενεργό ιστορικό ανενεργού ασθενή", 1, 1),
             ],
         )
         con.commit()
@@ -538,6 +662,111 @@ class PhysioAppTests(unittest.TestCase):
             self.assertIn(f'data-current-filter="{key}"', default_html)
             self.assertIn(label, default_html)
         self.assertIn('data-current-filter="today" href="/current?view=today" aria-current="page"', default_html)
+
+    def test_deactivating_history_clears_today_and_undo_restores_both(self):
+        response = self.client.post(
+            "/api/deactivate/1", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT is_active,today FROM clinical_histories WHERE history_id=1"
+            ).fetchone(),
+            (0, 0),
+        )
+        con.close()
+
+        undo = self.client.post("/api/undo", json={}, headers=self.api_headers())
+        self.assertEqual(undo.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT is_active,today FROM clinical_histories WHERE history_id=1"
+            ).fetchone(),
+            (1, 1),
+        )
+        con.close()
+
+    def test_deactivating_patient_clears_all_today_flags_and_undo_restores_them(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,is_active,today) VALUES(2,1,'2026-08-22',1,1)"
+        )
+        con.commit()
+        con.close()
+
+        response = self.client.post("/api/update", json={
+            "table": "patients", "pk": 1, "column": "is_active", "value": 0,
+        }, headers=self.api_headers())
+        self.assertEqual(response.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute("SELECT is_active FROM patients WHERE patient_id=1").fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            con.execute(
+                "SELECT COUNT(*) FROM clinical_histories WHERE patient_id=1 AND today=1"
+            ).fetchone()[0],
+            0,
+        )
+        con.close()
+
+        rejected = self.client.post("/api/update", json={
+            "table": "clinical_histories", "pk": 1, "column": "today", "value": 1,
+        }, headers=self.api_headers())
+        self.assertEqual(rejected.status_code, 400)
+
+        undo = self.client.post("/api/undo", json={}, headers=self.api_headers())
+        self.assertEqual(undo.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute("SELECT is_active FROM patients WHERE patient_id=1").fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            con.execute(
+                "SELECT COUNT(*) FROM clinical_histories WHERE patient_id=1 AND today=1"
+            ).fetchone()[0],
+            2,
+        )
+        con.close()
+
+    def test_history_autosave_deactivation_clears_today_and_inactive_records_cannot_restore_it(self):
+        response = self.client.post("/api/update", json={
+            "table": "clinical_histories", "pk": 1, "column": "is_active", "value": 0,
+        }, headers=self.api_headers())
+        self.assertEqual(response.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT is_active,today FROM clinical_histories WHERE history_id=1"
+            ).fetchone(),
+            (0, 0),
+        )
+        con.close()
+
+        rejected = self.client.post("/api/update", json={
+            "table": "clinical_histories", "pk": 1, "column": "today", "value": 1,
+        }, headers=self.api_headers())
+        self.assertEqual(rejected.status_code, 400)
+
+    def test_new_inactive_history_forces_today_off(self):
+        response = self.client.post("/histories/new", data={
+            "csrf_token": self.csrf(), "patient_id": "1", "history_date": "29/08/2026",
+            "main_diagnosis": "Ανενεργό", "today": "1",
+        })
+        self.assertEqual(response.status_code, 302)
+        history_id = int(response.headers["Location"].rsplit("/", 1)[-1])
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT is_active,today FROM clinical_histories WHERE history_id=?", (history_id,)
+            ).fetchone(),
+            (0, 0),
+        )
+        con.close()
 
     def test_current_filter_header_stays_visible_while_record_list_scrolls(self):
         stylesheet = (
