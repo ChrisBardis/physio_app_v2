@@ -351,6 +351,47 @@ def undo_last_change(app: Any) -> str:
             if payment_id:
                 con.execute("DELETE FROM payments WHERE payment_id=?", (payment_id,))
             con.execute("DELETE FROM appointments WHERE appointment_id=?", (pk_value,))
+        elif operation == "delete_appointment":
+            if table != "appointments" or pk_name != "appointment_id":
+                raise ValidationError("Μη ασφαλής διαγραφή παρουσίας Undo")
+            extra = json.loads(change["extra_json"] or "{}")
+            if set(extra) != {"appointments", "payments"}:
+                raise ValidationError("Ελλιπές αντίγραφο διαγραφής παρουσίας")
+            appointment_rows = extra.get("appointments")
+            if (
+                not isinstance(appointment_rows, list)
+                or len(appointment_rows) != 1
+                or str(appointment_rows[0].get("appointment_id")) != str(pk_value)
+            ):
+                raise ValidationError("Μη ασφαλή στοιχεία παρουσίας Undo")
+            for restore_table, restore_pk in (
+                ("appointments", "appointment_id"),
+                ("payments", "payment_id"),
+            ):
+                rows = extra.get(restore_table)
+                if not isinstance(rows, list):
+                    raise ValidationError("Μη ασφαλείς εγγραφές παρουσίας Undo")
+                schema_columns = {
+                    row["name"]
+                    for row in con.execute(f'PRAGMA table_info("{restore_table}")').fetchall()
+                }
+                if restore_pk not in schema_columns:
+                    raise ValidationError("Μη ασφαλές σχήμα παρουσίας Undo")
+                for row in rows:
+                    if (
+                        not isinstance(row, dict)
+                        or restore_pk not in row
+                        or not row
+                        or not set(row).issubset(schema_columns)
+                    ):
+                        raise ValidationError("Μη ασφαλής εγγραφή παρουσίας Undo")
+                    columns = list(row)
+                    column_sql = ",".join(f'"{column}"' for column in columns)
+                    placeholders = ",".join("?" for _ in columns)
+                    con.execute(
+                        f'INSERT INTO "{restore_table}"({column_sql}) VALUES({placeholders})',
+                        [row[column] for column in columns],
+                    )
         elif operation == "activate_history":
             extra = json.loads(change["extra_json"] or "{}")
             con.execute(
@@ -361,6 +402,51 @@ def undo_last_change(app: Any) -> str:
                 "UPDATE patients SET is_active=?, updated_at=CURRENT_TIMESTAMP WHERE patient_id=?",
                 (extra.get("old_patient_active", 0), extra.get("patient_id")),
             )
+        elif operation == "delete_patient":
+            if table != "patients" or pk_name != "patient_id":
+                raise ValidationError("Μη ασφαλής διαγραφή ασθενή Undo")
+            extra = json.loads(change["extra_json"] or "{}")
+            restore_plan = (
+                ("patients", "patient_id"),
+                ("clinical_histories", "history_id"),
+                ("appointments", "appointment_id"),
+                ("payments", "payment_id"),
+            )
+            if set(extra) != {item[0] for item in restore_plan}:
+                raise ValidationError("Ελλιπές αντίγραφο διαγραφής ασθενή")
+            patient_rows = extra.get("patients")
+            if (
+                not isinstance(patient_rows, list)
+                or len(patient_rows) != 1
+                or str(patient_rows[0].get("patient_id")) != str(pk_value)
+            ):
+                raise ValidationError("Μη ασφαλή στοιχεία ασθενή Undo")
+
+            for restore_table, restore_pk in restore_plan:
+                rows = extra.get(restore_table)
+                if not isinstance(rows, list):
+                    raise ValidationError("Μη ασφαλείς εγγραφές Undo")
+                schema_columns = {
+                    row["name"]
+                    for row in con.execute(f'PRAGMA table_info("{restore_table}")').fetchall()
+                }
+                if restore_pk not in schema_columns:
+                    raise ValidationError("Μη ασφαλές σχήμα Undo")
+                for row in rows:
+                    if (
+                        not isinstance(row, dict)
+                        or restore_pk not in row
+                        or not row
+                        or not set(row).issubset(schema_columns)
+                    ):
+                        raise ValidationError("Μη ασφαλής εγγραφή Undo")
+                    columns = list(row)
+                    column_sql = ",".join(f'"{column}"' for column in columns)
+                    placeholders = ",".join("?" for _ in columns)
+                    con.execute(
+                        f'INSERT INTO "{restore_table}"({column_sql}) VALUES({placeholders})',
+                        [row[column] for column in columns],
+                    )
         else:
             raise ValidationError(f"Μη υποστηριζόμενη αναίρεση: {operation}")
 

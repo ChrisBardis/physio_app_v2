@@ -6,6 +6,69 @@ let undoBusy = false;
 let pendingSaves = 0;
 let suppressDirtyWarning = false;
 
+const sortMemoryPrefix = 'physio-sort:';
+
+function readRememberedSort(pathname) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(`${sortMemoryPrefix}${pathname}`) || 'null');
+    if (!saved || typeof saved.sort !== 'string' || typeof saved.dir !== 'string') return null;
+    if (!/^[a-z_]+(?:,[a-z_]+)*$/.test(saved.sort)) return null;
+    if (!/^(?:asc|desc)(?:,(?:asc|desc))*$/.test(saved.dir)) return null;
+    return saved;
+  } catch (_) {
+    return null;
+  }
+}
+
+function rememberCurrentSort() {
+  const url = new URL(window.location.href);
+  const sort = url.searchParams.get('sort');
+  const dir = url.searchParams.get('dir');
+  if (!sort || !dir) return;
+  try {
+    window.localStorage.setItem(
+      `${sortMemoryPrefix}${url.pathname}`,
+      JSON.stringify({sort, dir}),
+    );
+  } catch (_) {
+    // Η εφαρμογή συνεχίζει κανονικά όταν ο browser δεν επιτρέπει local storage.
+  }
+}
+
+function addRememberedSort(url) {
+  if (url.origin !== window.location.origin || url.searchParams.has('sort')) return url;
+  const saved = readRememberedSort(url.pathname);
+  if (!saved) return url;
+  url.searchParams.set('sort', saved.sort);
+  url.searchParams.set('dir', saved.dir);
+  return url;
+}
+
+rememberCurrentSort();
+
+document.addEventListener('click', event => {
+  const link = event.target.closest('a[href]');
+  if (!link || link.hasAttribute('download')) return;
+  const target = addRememberedSort(new URL(link.href, window.location.href));
+  link.href = target.href;
+}, true);
+
+document.addEventListener('submit', event => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || form.method.toLowerCase() !== 'get') return;
+  if (form.elements.namedItem('sort')) return;
+  const target = new URL(form.action || window.location.href, window.location.href);
+  const saved = readRememberedSort(target.pathname);
+  if (!saved) return;
+  for (const [name, value] of Object.entries(saved)) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+}, true);
+
 function setStatus(text, cls = '') {
   if (!statusBox) return;
   statusBox.textContent = text;
@@ -471,6 +534,41 @@ document.addEventListener('click', async event => {
   }
 });
 
+document.addEventListener('change', async event => {
+  const checkbox = event.target.closest('[data-history-status]');
+  if (!checkbox) return;
+  const requestedState = checkbox.checked;
+  checkbox.disabled = true;
+  pendingSaves += 1;
+  setStatus('Αποθήκευση…', 'saving');
+  try {
+    await postJSON(`/api/${requestedState ? 'activate' : 'deactivate'}/${checkbox.dataset.history}`);
+    setStatus('Αποθηκεύτηκε', 'saved');
+  } catch (error) {
+    checkbox.checked = !requestedState;
+    setStatus('Σφάλμα', 'error');
+    toast(error.message);
+  } finally {
+    checkbox.disabled = false;
+    pendingSaves = Math.max(0, pendingSaves - 1);
+  }
+});
+
+document.addEventListener('click', async event => {
+  const button = event.target.closest('.delete-patient');
+  if (!button) return;
+  if (!window.confirm('Θα διαγραφεί ο ασθενής, τα ιστορικά του και οι παρουσίες του')) return;
+  button.disabled = true;
+  try {
+    await postJSON(`/api/patients/${button.dataset.patient}/delete`);
+    suppressDirtyWarning = true;
+    window.location.assign('/patients');
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message);
+  }
+});
+
 const newAppointment = document.getElementById('new-appointment');
 if (newAppointment) newAppointment.addEventListener('click', async () => {
   if (!confirmInternalNavigation()) return;
@@ -483,6 +581,56 @@ if (newAppointment) newAppointment.addEventListener('click', async () => {
     newAppointment.disabled = false;
     toast(error.message);
   }
+});
+
+const appointmentsBody = document.getElementById('appointments-body');
+const deleteAppointment = document.getElementById('delete-appointment');
+
+function selectAppointmentRow(row) {
+  if (!appointmentsBody || !deleteAppointment || !row?.dataset.appointment) return;
+  appointmentsBody.querySelectorAll('tr[data-appointment]').forEach(candidate => {
+    const selected = candidate === row;
+    candidate.classList.toggle('selected-appointment', selected);
+    candidate.setAttribute('aria-selected', String(selected));
+  });
+  deleteAppointment.dataset.appointment = row.dataset.appointment;
+  deleteAppointment.disabled = false;
+}
+
+appointmentsBody?.addEventListener('click', event => {
+  const row = event.target.closest('tr[data-appointment]');
+  if (row) selectAppointmentRow(row);
+});
+
+appointmentsBody?.addEventListener('keydown', event => {
+  const row = event.target.closest('tr[data-appointment]');
+  if (!row || event.target !== row || !['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  selectAppointmentRow(row);
+});
+
+deleteAppointment?.addEventListener('click', async () => {
+  const appointmentId = deleteAppointment.dataset.appointment;
+  if (!appointmentId || !confirmInternalNavigation()) return;
+  if (!window.confirm('Θα διαγραφεί η επιλεγμένη παρουσία και η πληρωμή της.')) return;
+  deleteAppointment.disabled = true;
+  try {
+    await postJSON(`/api/appointments/${appointmentId}/delete`);
+    suppressDirtyWarning = true;
+    window.location.reload();
+  } catch (error) {
+    deleteAppointment.disabled = false;
+    toast(error.message);
+  }
+});
+
+const todayDateInput = document.getElementById('today-date');
+const todayNativeDate = document.getElementById('today-native-date');
+todayNativeDate?.addEventListener('change', () => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(todayNativeDate.value);
+  if (!match || !todayDateInput) return;
+  todayDateInput.value = `${match[3]}/${match[2]}/${match[1]}`;
+  todayDateInput.form?.requestSubmit();
 });
 
 const defaultAmount = document.getElementById('default-amount');

@@ -26,7 +26,7 @@
       <div><span class="label">Κοινωνική ασφάλιση</span><strong>{{ history.social_security or '' }}</strong></div>
       <div><span class="label">Παραπεμπτικό ΓεΣΥ</span><strong>{{ history.gesy_referral or '' }}</strong></div>
     </div>
-    <div class="history-summary"><div class="summary-line"><span>{{ history.main_diagnosis or '' }}</span></div><div class="problem-box">{{ history.problem_description or '' }}</div></div>
+    <div class="history-summary"><div class="summary-line"><span>{{ history.main_diagnosis or '' }}</span></div><label class="history-comments"><span>Σχόλια ιστορικού</span><textarea class="problem-box autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="problem_description">{{ history.problem_description or '' }}</textarea></label></div>
     <div class="session-toolbar">
       <h2>Συνεδρίες</h2>
       <div class="session-totals" aria-label="Σύνολα συνεδριών">
@@ -35,11 +35,12 @@
         <div class="session-total"><span>Αποδείξεις</span><strong data-session-total="receipts">{{ '%.2f'|format(appointment_totals.receipts) }}</strong></div>
       </div>
       <button id="new-appointment" class="primary-btn" data-history="{{ history.history_id }}">+ Νέα συνεδρία</button>
+      <button id="delete-appointment" class="danger-btn" type="button" disabled>Διαγραφή παρουσίας</button>
     </div>
     <div class="table-wrap sessions-wrap">
       <table class="data-table sessions-table"><thead><tr>{{ sortable('Α/Α', 'number', current_sort, current_dir) }}{{ sortable('Ημερομηνία', 'date', current_sort, current_dir) }}{{ sortable('Χρέωση', 'due', current_sort, current_dir) }}{{ sortable('Πληρωμή', 'paid', current_sort, current_dir) }}{{ sortable('Απόδειξη', 'receipt', current_sort, current_dir) }}{{ sortable('Σημειώσεις', 'notes', current_sort, current_dir) }}</tr></thead><tbody id="appointments-body">
       {% for a in appointments %}
-        <tr data-appointment="{{ a.appointment_id }}">
+        <tr data-appointment="{{ a.appointment_id }}" tabindex="0" aria-selected="false">
           <td><input type="number" class="grid-input autosave" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_number" value="{{ a.appointment_number if a.appointment_number is not none else '' }}"></td>
           <td><input class="grid-input autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_date" value="{{ a.appointment_date|grdate }}"></td>
           <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_due" value="{{ '%.2f'|format(a.amount_due or 0) }}"></td>

@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% from '_macros.html' import sortable with context %}
+{% block title %}Σήμερα — {{ selected_date|grdate }} — ΦΥΣΙΟ{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="panel-header">
+    <div><h1>Σήμερα — {{ selected_date|grdate }}</h1><p>Ιστορικά με καταχωρημένο ραντεβού την επιλεγμένη ημερομηνία</p></div>
+    <form class="date-navigation" method="get" action="{{ url_for('today_appointments') }}">
+      <label for="today-date">Ημερομηνία</label>
+      <div class="date-input-with-calendar">
+        <input id="today-date" name="date" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ selected_date|grdate }}">
+        <label class="calendar-picker" title="Επιλογή ημερομηνίας">
+          <span aria-hidden="true">Ημερολόγιο</span>
+          <input id="today-native-date" type="date" value="{{ selected_date }}" aria-label="Επιλογή ημερομηνίας από ημερολόγιο">
+        </label>
+      </div>
+      <button type="submit">Εμφάνιση</button>
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table compact today-table">
+      <thead><tr>{{ sortable('Ασθενής ID', 'patient_id', current_sort, current_dir) }}{{ sortable('Ιστορικό ID', 'history_id', current_sort, current_dir) }}{{ sortable('Επώνυμο', 'last_name', current_sort, current_dir) }}{{ sortable('Όνομα', 'first_name', current_sort, current_dir) }}{{ sortable('Κοινωνική ασφάλιση', 'social_security', current_sort, current_dir) }}{{ sortable('Παραπεμπτικό ΓεΣΥ', 'gesy_referral', current_sort, current_dir) }}{{ sortable('Γέννηση', 'birthdate', current_sort, current_dir) }}{{ sortable('Αριθμός ταυτότητας', 'identity_number', current_sort, current_dir) }}{{ sortable('Κινητό', 'mobile', current_sort, current_dir) }}</tr></thead>
+      <tbody data-infinite-list data-next-offset="{{ next_offset }}" data-batch-size="{{ batch_size }}" data-has-more="{{ 'true' if has_more else 'false' }}" data-colspan="9">
+        <tr class="infinite-spacer" data-infinite-top hidden><td colspan="9"></td></tr>
+        {% include '_today_rows.html' %}
+        <tr class="infinite-spacer" data-infinite-bottom hidden><td colspan="9"></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
+</section>
+{% endblock %}

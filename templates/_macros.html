@@ -9,6 +9,19 @@
 </th>
 {%- endmacro %}
 
+{% macro multi_sortable(label, key, current_sorts, sort_state) -%}
+{% set state = sort_state.get(key) %}
+{% set current_dir = state.direction if state else none %}
+{% set next_dir = 'desc' if current_dir == 'asc' else 'asc' %}
+{% set sort_label = 'Ταξινόμηση φθίνουσα' if next_dir == 'desc' else 'Ταξινόμηση αύξουσα' %}
+<th aria-sort="{% if state and state.priority == 1 %}{{ 'ascending' if current_dir == 'asc' else 'descending' }}{% else %}none{% endif %}">
+  <a class="sort-link" href="{{ multi_sort_url(key, current_sorts) }}" title="{{ sort_label }}{% if state %} · Προτεραιότητα {{ state.priority }}{% endif %}" aria-label="{{ label }} — {{ sort_label }}{% if state %} — Προτεραιότητα {{ state.priority }}{% endif %}">
+    <span>{{ label }}</span>
+    <span class="sort-button" aria-hidden="true">{{ '↓' if next_dir == 'desc' else '↑' }}</span>
+  </a>
+</th>
+{%- endmacro %}
+
 {% macro autocomplete_input(name, value, source, hidden_name='', hidden_value='') -%}
 <div class="autocomplete-control">
   <input name="{{ name }}" value="{{ value }}" autocomplete="one-time-code" data-lpignore="true"

@@ -5,7 +5,13 @@
 {% block content %}
 <section class="patient-layout">
   <div class="panel patient-form-panel">
-    <div class="panel-header"><div><h1>Στοιχεία ασθενούς</h1><p>Patient ID: <strong>{{ patient.patient_id }}</strong> · αυτόματη αποθήκευση</p></div><a class="primary-btn" href="{{ url_for('history_new_picker', patient_id=patient.patient_id) }}">+ Νέο ιστορικό</a></div>
+    <div class="panel-header">
+      <div><h1>Στοιχεία ασθενούς</h1><p>Patient ID: <strong>{{ patient.patient_id }}</strong> · αυτόματη αποθήκευση</p></div>
+      <div class="panel-header-actions">
+        <a class="primary-btn" href="{{ url_for('history_new_picker', patient_id=patient.patient_id) }}">+ Νέο ιστορικό</a>
+        <button type="button" class="danger-btn delete-patient" data-patient="{{ patient.patient_id }}">Διαγραφή ασθενή</button>
+      </div>
+    </div>
     <div class="form-grid two-col">
       <label>Όνομα{{ autocomplete_autosave_input('patient-first-name', patient.first_name or '', 'first_name', 'patients', patient.patient_id, 'first_name') }}</label>
       <label>Επώνυμο<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="last_name" value="{{ patient.last_name or '' }}"></label>

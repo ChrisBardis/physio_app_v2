@@ -204,13 +204,35 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             params.pop("format", None)
             return url_for(request.endpoint, **params)
 
+        def multi_sort_url(column: str, current_sorts: list[tuple[str, str]]) -> str:
+            params = request.args.to_dict(flat=True)
+            params.update(request.view_args or {})
+            existing_direction = next(
+                (direction for key, direction in current_sorts if key == column),
+                None,
+            )
+            next_direction = "desc" if existing_direction == "asc" else "asc"
+            updated_sorts = [(column, next_direction), *(
+                (key, direction)
+                for key, direction in current_sorts
+                if key != column
+            )]
+            params["sort"] = ",".join(key for key, _ in updated_sorts)
+            params["dir"] = ",".join(direction for _, direction in updated_sorts)
+            params.pop("page", None)
+            params.pop("offset", None)
+            params.pop("format", None)
+            return url_for(request.endpoint, **params)
+
         return {
             "csrf_token": session.get("_csrf_token", ""),
             "sort_url": sort_url,
+            "multi_sort_url": multi_sort_url,
         }
 
     @app.route("/")
     def home():
+        today_iso = date.today().isoformat()
         with db_conn(app) as con:
             stats = {
                 "active_histories": con.execute(
@@ -221,8 +243,56 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                        FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
                        WHERE h.today=1 AND h.is_active=1 AND p.is_active=1"""
                 ).fetchone()[0],
+                "today_appointments": con.execute(
+                    "SELECT COUNT(DISTINCT history_id) FROM appointments WHERE appointment_date=?",
+                    (today_iso,),
+                ).fetchone()[0],
             }
         return render_template("home.html", stats=stats)
+
+    @app.route("/today")
+    def today_appointments():
+        raw_date = request.args.get("date", "").strip()
+        try:
+            selected_date = normalize_value(
+                "appointments", "appointment_date", raw_date or date.today().isoformat(),
+            )
+        except ValidationError as exc:
+            abort(400, description=str(exc))
+
+        sort_map = {
+            "patient_id": "p.patient_id",
+            "history_id": "h.history_id",
+            "last_name": "PYCASEFOLD(p.last_name)",
+            "first_name": "PYCASEFOLD(p.first_name)",
+            "social_security": "PYCASEFOLD(h.social_security)",
+            "gesy_referral": "PYCASEFOLD(h.gesy_referral)",
+            "birthdate": "p.birthdate",
+            "identity_number": "PYCASEFOLD(p.identity_number)",
+            "mobile": "PYCASEFOLD(p.mobile_phone)",
+        }
+        sort_key, sort_dir = validated_sort(sort_map, "last_name")
+        offset = batch_offset()
+        rows, has_more = batched_query(
+            app,
+            """SELECT p.patient_id, h.history_id, p.last_name, p.first_name,
+                      h.social_security, h.gesy_referral, p.birthdate,
+                      p.identity_number, p.mobile_phone""",
+            """FROM clinical_histories h
+               JOIN patients p ON p.patient_id=h.patient_id""",
+            ["EXISTS (SELECT 1 FROM appointments a WHERE a.history_id=h.history_id AND a.appointment_date=?)"],
+            [selected_date],
+            sort_map[sort_key], sort_dir, offset, LIST_BATCH_SIZE,
+            "p.patient_id, h.history_id",
+        )
+        if wants_list_batch():
+            return list_batch_response("_today_rows.html", rows, offset, has_more)
+        return render_template(
+            "today.html", rows=rows, selected_date=selected_date,
+            has_more=has_more, next_offset=offset + len(rows),
+            batch_size=LIST_BATCH_SIZE, current_sort=sort_key,
+            current_dir=sort_dir,
+        )
 
     @app.route("/active")
     def active_histories():
@@ -269,23 +339,31 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "patient_id": "p.patient_id", "history_id": "h.history_id",
             "first_name": "PYCASEFOLD(p.first_name)", "last_name": "PYCASEFOLD(p.last_name)",
             "history_date": "h.history_date", "diagnosis": "PYCASEFOLD(h.main_diagnosis)",
-            "home_phone": "p.home_phone", "mobile": "p.mobile_phone",
+            "mobile": "p.mobile_phone", "history_active": "h.is_active",
+            "today": "h.today",
         }
-        sort_key, sort_dir = validated_sort(sort_map, "history_date", "desc")
+        current_sorts = validated_sorts(sort_map, "history_date", "desc")
+        sort_state = {
+            key: {"direction": direction, "priority": priority}
+            for priority, (key, direction) in enumerate(current_sorts, start=1)
+        }
+        order_terms = [
+            (sort_map[key], direction) for key, direction in current_sorts
+        ]
         offset = batch_offset()
-        where = ["h.is_active=0"]
+        where: list[str] = []
         params: list[Any] = []
         add_normalized_search(
             where, params, q,
             ("CAST(h.history_id AS TEXT)", "CAST(p.patient_id AS TEXT)", "p.first_name", "p.last_name", "p.mobile_phone"),
             prefix_expressions=("p.first_name", "p.last_name"),
         )
-        rows, has_more = batched_query(
+        rows, has_more = batched_query_multi(
             app,
             """SELECT h.history_id, h.patient_id, h.history_date, h.main_diagnosis, h.is_active,
-                      p.first_name, p.last_name, p.mobile_phone, p.home_phone""",
+                      h.today, p.first_name, p.last_name, p.mobile_phone""",
             "FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id",
-            where, params, sort_map[sort_key], sort_dir, offset, LIST_BATCH_SIZE,
+            where, params, order_terms, offset, LIST_BATCH_SIZE,
             "h.history_id",
         )
         if wants_list_batch():
@@ -295,7 +373,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return render_template(
             "activation.html", rows=rows, q=q, has_more=has_more,
             next_offset=offset + len(rows), batch_size=LIST_BATCH_SIZE,
-            current_sort=sort_key, current_dir=sort_dir,
+            current_sorts=current_sorts, sort_state=sort_state,
         )
 
     @app.route("/patients")
@@ -304,7 +382,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         sort_map = {
             "patient_id": "p.patient_id", "first_name": "PYCASEFOLD(p.first_name)",
             "last_name": "PYCASEFOLD(p.last_name)", "mobile": "p.mobile_phone",
-            "birthdate": "p.birthdate", "history_count": "history_count",
+            "identity_number": "p.identity_number", "birthdate": "p.birthdate",
+            "history_count": "history_count",
             "is_active": "p.is_active",
         }
         sort_key, sort_dir = validated_sort(sort_map, "last_name")
@@ -313,13 +392,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         params: list[Any] = []
         add_normalized_search(
             where, params, q,
-            ("CAST(p.patient_id AS TEXT)", "p.first_name", "p.last_name", "p.mobile_phone"),
+            ("CAST(p.patient_id AS TEXT)", "p.first_name", "p.last_name", "p.mobile_phone", "p.identity_number"),
             prefix_expressions=("p.first_name", "p.last_name"),
         )
         rows, has_more = batched_query(
             app,
             """SELECT p.patient_id, p.first_name, p.last_name, p.mobile_phone,
-                      p.birthdate, p.is_active,
+                      p.identity_number, p.birthdate, p.is_active,
                       COALESCE(hc.history_count, 0) AS history_count,
                       COALESCE(hc.active_history_count, 0) AS active_history_count""",
             """FROM patients p
@@ -678,6 +757,94 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         set_setting(app, "default_amount_due", value)
         return jsonify(ok=True, value=value)
 
+    @app.post("/api/patients/<int:patient_id>/delete")
+    def api_delete_patient(patient_id: int):
+        with db_conn(app) as con:
+            if not con.execute(
+                "SELECT 1 FROM patients WHERE patient_id=?", (patient_id,)
+            ).fetchone():
+                return jsonify(ok=False, error="Ο ασθενής δεν βρέθηκε"), 404
+
+        try:
+            backup_path = create_backup(app, force=True)
+        except Exception:
+            app.logger.exception("Αποτυχία backup πριν από διαγραφή ασθενή")
+            return jsonify(
+                ok=False,
+                error="Η διαγραφή ακυρώθηκε επειδή δεν δημιουργήθηκε backup",
+            ), 500
+
+        try:
+            with write_transaction(app) as con:
+                patient = con.execute(
+                    "SELECT * FROM patients WHERE patient_id=?", (patient_id,)
+                ).fetchone()
+                if not patient:
+                    return jsonify(ok=False, error="Ο ασθενής δεν βρέθηκε"), 404
+
+                histories = con.execute(
+                    "SELECT * FROM clinical_histories WHERE patient_id=? ORDER BY history_id",
+                    (patient_id,),
+                ).fetchall()
+                appointments = con.execute("""
+                    SELECT a.* FROM appointments a
+                    JOIN clinical_histories h ON h.history_id=a.history_id
+                    WHERE h.patient_id=? ORDER BY a.appointment_id
+                """, (patient_id,)).fetchall()
+                payments = con.execute("""
+                    SELECT pay.* FROM payments pay
+                    JOIN appointments a ON a.appointment_id=pay.appointment_id
+                    JOIN clinical_histories h ON h.history_id=a.history_id
+                    WHERE h.patient_id=? ORDER BY pay.payment_id
+                """, (patient_id,)).fetchall()
+
+                snapshot = {
+                    "patients": [dict(patient)],
+                    "clinical_histories": [dict(row) for row in histories],
+                    "appointments": [dict(row) for row in appointments],
+                    "payments": [dict(row) for row in payments],
+                }
+                log_change(
+                    con, app, "delete_patient", "patients", "patient_id", patient_id,
+                    None, None, snapshot, f"Διαγραφή ασθενή #{patient_id}",
+                )
+
+                deleted_payments = con.execute("""
+                    DELETE FROM payments WHERE appointment_id IN (
+                        SELECT a.appointment_id FROM appointments a
+                        JOIN clinical_histories h ON h.history_id=a.history_id
+                        WHERE h.patient_id=?
+                    )
+                """, (patient_id,)).rowcount
+                deleted_appointments = con.execute("""
+                    DELETE FROM appointments WHERE history_id IN (
+                        SELECT history_id FROM clinical_histories WHERE patient_id=?
+                    )
+                """, (patient_id,)).rowcount
+                deleted_histories = con.execute(
+                    "DELETE FROM clinical_histories WHERE patient_id=?", (patient_id,)
+                ).rowcount
+                deleted_patient = con.execute(
+                    "DELETE FROM patients WHERE patient_id=?", (patient_id,)
+                ).rowcount
+                if deleted_patient != 1:
+                    raise sqlite3.IntegrityError("Ο ασθενής δεν διαγράφηκε")
+
+            return jsonify(
+                ok=True,
+                patient_id=patient_id,
+                histories=deleted_histories,
+                appointments=deleted_appointments,
+                payments=deleted_payments,
+                backup=backup_path.name,
+            )
+        except sqlite3.Error:
+            app.logger.exception("Αποτυχία διαγραφής ασθενή #%s", patient_id)
+            return jsonify(
+                ok=False,
+                error="Η διαγραφή ακυρώθηκε και δεν άλλαξε κανένα δεδομένο",
+            ), 500
+
     @app.post("/api/backup")
     def api_backup():
         try:
@@ -686,6 +853,63 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         except Exception:
             app.logger.exception("Αποτυχία χειροκίνητου backup")
             return jsonify(ok=False, error="Δεν ήταν δυνατή η δημιουργία backup"), 500
+
+    @app.post("/api/appointments/<int:appointment_id>/delete")
+    def api_delete_appointment(appointment_id: int):
+        with db_conn(app) as con:
+            if not con.execute(
+                "SELECT 1 FROM appointments WHERE appointment_id=?", (appointment_id,)
+            ).fetchone():
+                return jsonify(ok=False, error="Η παρουσία δεν βρέθηκε"), 404
+
+        try:
+            backup_path = create_backup(app, force=True)
+        except Exception:
+            app.logger.exception("Αποτυχία backup πριν από διαγραφή παρουσίας")
+            return jsonify(
+                ok=False,
+                error="Η διαγραφή ακυρώθηκε επειδή δεν δημιουργήθηκε backup",
+            ), 500
+
+        try:
+            with write_transaction(app) as con:
+                appointment = con.execute(
+                    "SELECT * FROM appointments WHERE appointment_id=?", (appointment_id,)
+                ).fetchone()
+                if not appointment:
+                    return jsonify(ok=False, error="Η παρουσία δεν βρέθηκε"), 404
+                payments = con.execute(
+                    "SELECT * FROM payments WHERE appointment_id=? ORDER BY payment_id",
+                    (appointment_id,),
+                ).fetchall()
+                snapshot = {
+                    "appointments": [dict(appointment)],
+                    "payments": [dict(row) for row in payments],
+                }
+                log_change(
+                    con, app, "delete_appointment", "appointments", "appointment_id",
+                    appointment_id, None, None, snapshot,
+                    f"Διαγραφή παρουσίας #{appointment['appointment_number'] or appointment_id} "
+                    f"από το ιστορικό #{appointment['history_id']}",
+                )
+                deleted_payments = con.execute(
+                    "DELETE FROM payments WHERE appointment_id=?", (appointment_id,)
+                ).rowcount
+                deleted_appointment = con.execute(
+                    "DELETE FROM appointments WHERE appointment_id=?", (appointment_id,)
+                ).rowcount
+                if deleted_appointment != 1:
+                    raise sqlite3.IntegrityError("Η παρουσία δεν διαγράφηκε")
+            return jsonify(
+                ok=True, appointment_id=appointment_id,
+                payments=deleted_payments, backup=backup_path.name,
+            )
+        except sqlite3.Error:
+            app.logger.exception("Αποτυχία διαγραφής παρουσίας #%s", appointment_id)
+            return jsonify(
+                ok=False,
+                error="Η διαγραφή ακυρώθηκε και δεν άλλαξε κανένα δεδομένο",
+            ), 500
 
     @app.post("/api/update")
     def api_update():
@@ -707,6 +931,26 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 if not old_row:
                     return jsonify(ok=False, error="Η εγγραφή δεν βρέθηκε"), 404
                 old = old_row[0]
+
+                if (
+                    table == "appointments" and column == "appointment_date"
+                    and value is not None and not equivalent(old, value)
+                ):
+                    duplicate = con.execute("""
+                        SELECT 1
+                        FROM appointments current_appointment
+                        JOIN appointments other
+                          ON other.history_id=current_appointment.history_id
+                         AND other.appointment_id<>current_appointment.appointment_id
+                        WHERE current_appointment.appointment_id=?
+                          AND other.appointment_date=?
+                        LIMIT 1
+                    """, (pk, value)).fetchone()
+                    if duplicate:
+                        return jsonify(
+                            ok=False,
+                            error="Υπάρχει ήδη καταχώριση παρουσίας για αυτό το ιστορικό την επιλεγμένη ημερομηνία.",
+                        ), 409
 
                 if table == "clinical_histories" and column == "today" and value == 1:
                     eligibility = con.execute("""
@@ -879,6 +1123,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/api/appointment/new/<int:history_id>")
     def api_new_appointment(history_id: int):
         with write_transaction(app) as con:
+            today_iso = date.today().isoformat()
+            duplicate = con.execute(
+                "SELECT appointment_id FROM appointments WHERE history_id=? AND appointment_date=? LIMIT 1",
+                (history_id, today_iso),
+            ).fetchone()
+            if duplicate:
+                return jsonify(
+                    ok=False,
+                    error="Έχει γίνει ήδη καταχώριση παρουσίας για σήμερα.",
+                    appointment_id=duplicate["appointment_id"],
+                ), 409
             try:
                 default_due = automatic_appointment_due(con, history_id)
             except LookupError:
@@ -891,7 +1146,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "SELECT COALESCE(MAX(appointment_number),0)+1 FROM appointments WHERE history_id=?",
                 (history_id,),
             ).fetchone()[0]
-            today_iso = date.today().isoformat()
             cur = con.execute("""
                 INSERT INTO appointments(history_id, appointment_number, appointment_date, status, today)
                 VALUES(?,?,?, 'completed', 0)
@@ -994,6 +1248,26 @@ def validated_sort(
     return sort_key, direction
 
 
+def validated_sorts(
+    sort_map: dict[str, str], default: str, default_dir: str = "asc",
+) -> list[tuple[str, str]]:
+    raw_keys = request.args.get("sort", "")
+    raw_directions = request.args.get("dir", "")
+    keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
+    directions = [direction.strip().lower() for direction in raw_directions.split(",")]
+    sorts: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, key in enumerate(keys):
+        if key not in sort_map or key in seen:
+            continue
+        direction = directions[index] if index < len(directions) else "asc"
+        if direction not in {"asc", "desc"}:
+            direction = "asc"
+        sorts.append((key, direction))
+        seen.add(key)
+    return sorts or [(default, default_dir)]
+
+
 def batch_offset() -> int:
     return max(0, request.args.get("offset", 0, type=int) or 0)
 
@@ -1043,6 +1317,25 @@ def batched_query(
         rows = con.execute(
             f"{select_sql} {from_sql}{where_sql} "
             f"ORDER BY {order_sql} {direction.upper()}, {tie_breaker} LIMIT ? OFFSET ?",
+            [*params, batch_size + 1, offset],
+        ).fetchall()
+    return rows[:batch_size], len(rows) > batch_size
+
+
+def batched_query_multi(
+    app: Flask, select_sql: str, from_sql: str, where: list[str], params: list[Any],
+    order_terms: list[tuple[str, str]], offset: int, batch_size: int,
+    tie_breaker: str,
+) -> tuple[list[sqlite3.Row], bool]:
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    order_sql = ", ".join(
+        f"{expression} {direction.upper()}"
+        for expression, direction in order_terms
+    )
+    with db_conn(app) as con:
+        rows = con.execute(
+            f"{select_sql} {from_sql}{where_sql} "
+            f"ORDER BY {order_sql}, {tie_breaker} LIMIT ? OFFSET ?",
             [*params, batch_size + 1, offset],
         ).fetchall()
     return rows[:batch_size], len(rows) > batch_size

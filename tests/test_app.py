@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from app import create_app
@@ -134,6 +135,58 @@ class PhysioAppTests(unittest.TestCase):
         self.assertEqual(undo.status_code, 200)
         self.assertEqual(self.count("patients"), before)
 
+    def test_patient_delete_cascades_histories_appointments_and_payments_and_undoes(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) "
+            "VALUES(2,2,'2026-08-22','Δοκιμή διαγραφής',1,1)"
+        )
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) "
+            "VALUES(2,2,1,'2026-08-23')"
+        )
+        con.execute(
+            "INSERT INTO payments(payment_id,appointment_id,payment_date,amount_due,amount_paid,receipt_number) "
+            "VALUES(2,2,'2026-08-23',35,10,'2')"
+        )
+        con.commit()
+        con.close()
+
+        patient_html = self.client.get("/patients/2").get_data(as_text=True)
+        self.assertIn('class="danger-btn delete-patient" data-patient="2"', patient_html)
+        script = (Path(self.app.static_folder) / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "Θα διαγραφεί ο ασθενής, τα ιστορικά του και οι παρουσίες του",
+            script,
+        )
+
+        response = self.client.post(
+            "/api/patients/2/delete", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {key: response.get_json()[key] for key in ("histories", "appointments", "payments")},
+            {"histories": 1, "appointments": 1, "payments": 1},
+        )
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM patients WHERE patient_id=2").fetchone()[0], 0)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM clinical_histories WHERE patient_id=2").fetchone()[0], 0)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM appointments WHERE history_id=2").fetchone()[0], 0)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM payments WHERE appointment_id=2").fetchone()[0], 0)
+        self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+        con.close()
+        self.assertTrue(any(self.backup_dir.glob("clinic_*.db")))
+
+        undo = self.client.post("/api/undo", json={}, headers=self.api_headers())
+        self.assertEqual(undo.status_code, 200)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM patients WHERE patient_id=2").fetchone()[0], 1)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM clinical_histories WHERE patient_id=2").fetchone()[0], 1)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM appointments WHERE history_id=2").fetchone()[0], 1)
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM payments WHERE appointment_id=2").fetchone()[0], 1)
+        self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+        con.close()
+
     def test_explicit_history_save_and_new_appointment(self):
         histories_before = self.count("clinical_histories")
         response = self.client.post("/histories/new", data={
@@ -151,6 +204,73 @@ class PhysioAppTests(unittest.TestCase):
         body = appointment.get_json()
         self.assertGreater(body["appointment_id"], 0)
         self.assertGreater(body["payment_id"], 0)
+
+    def test_new_appointment_rejects_a_second_presence_on_the_same_day(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,is_active,today) "
+            "VALUES(2,2,'2026-08-22',1,1)"
+        )
+        con.commit()
+        con.close()
+
+        first = self.client.post(
+            "/api/appointment/new/2", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(first.status_code, 200)
+        second = self.client.post(
+            "/api/appointment/new/2", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(
+            second.get_json()["error"],
+            "Έχει γίνει ήδη καταχώριση παρουσίας για σήμερα.",
+        )
+        con = sqlite3.connect(self.db_path)
+        count = con.execute(
+            "SELECT COUNT(*) FROM appointments WHERE history_id=2 AND appointment_date=?",
+            (date.today().isoformat(),),
+        ).fetchone()[0]
+        con.close()
+        self.assertEqual(count, 1)
+
+    def test_appointment_date_update_cannot_create_a_duplicate_presence(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) "
+            "VALUES(2,1,2,'2026-08-22')"
+        )
+        con.commit()
+        con.close()
+
+        response = self.client.post("/api/update", json={
+            "table": "appointments", "pk": 2,
+            "column": "appointment_date", "value": "21/08/2026",
+        }, headers=self.api_headers())
+        self.assertEqual(response.status_code, 409)
+        con = sqlite3.connect(self.db_path)
+        saved_date = con.execute(
+            "SELECT appointment_date FROM appointments WHERE appointment_id=2"
+        ).fetchone()[0]
+        con.close()
+        self.assertEqual(saved_date, "2026-08-22")
+
+    def test_selected_presence_delete_removes_payment_and_undo_restores_both(self):
+        response = self.client.post(
+            "/api/appointments/1/delete", json={}, headers=self.api_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.count("appointments"), 0)
+        self.assertEqual(self.count("payments"), 0)
+        self.assertTrue(list(self.backup_dir.glob("*.db")))
+
+        undo = self.client.post("/api/undo", json={}, headers=self.api_headers())
+        self.assertEqual(undo.status_code, 200)
+        self.assertEqual(self.count("appointments"), 1)
+        self.assertEqual(self.count("payments"), 1)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+        con.close()
 
     def test_new_appointment_uses_previous_charge(self):
         con = sqlite3.connect(self.db_path)
@@ -343,7 +463,7 @@ class PhysioAppTests(unittest.TestCase):
         html = self.client.get("/").get_data(as_text=True)
         labels = [
             "ΝΕΟΣ ΑΣΘΕΝΗΣ", "ΑΣΘΕΝΕΙΣ", "ΝΕΟ ΙΣΤΟΡΙΚΟ",
-            "ΕΝΕΡΓΑ ΙΣΤΟΡΙΚΑ", "ΕΝΕΡΓΟΠΟΙΗΣΗ", "ΣΗΜΕΡΙΝΑ ΙΣΤΟΡΙΚΑ",
+            "ΕΝΕΡΓΑ ΙΣΤΟΡΙΚΑ", "ΕΝΕΡΓΟΠΟΙΗΣΗ", "ΣΗΜΕΡΙΝΑ ΙΣΤΟΡΙΚΑ", "ΣΗΜΕΡΑ",
         ]
         positions = [html.index(label) for label in labels]
         self.assertEqual(positions, sorted(positions))
@@ -374,7 +494,7 @@ class PhysioAppTests(unittest.TestCase):
         self.assertEqual(patient_detail_html.count('class="autocomplete-toggle"'), 4)
         self.assertIn('data-autocomplete-create="profession"', patient_detail_html)
         self.assertNotIn('autocomplete="off"', patient_detail_html)
-        self.assertIn('app.js?v=20260829-session-totals', patient_detail_html)
+        self.assertIn('app.js?v=20260829-today-attendance-controls', patient_detail_html)
         self.assertNotIn('autocomplete="family-name"', patient_html)
         self.assertNotIn('autocomplete="street-address"', patient_html)
         self.assertNotIn('autocomplete="tel"', patient_html)
@@ -590,15 +710,90 @@ class PhysioAppTests(unittest.TestCase):
             ascending.index('href="/patients/1"'),
         )
 
+    def test_patient_list_active_column_uses_editable_checkboxes(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute("UPDATE patients SET is_active=0 WHERE patient_id=2")
+        con.commit()
+        con.close()
+
+        html = self.client.get("/patients?sort=patient_id&dir=asc").get_data(as_text=True)
+        self.assertIn(
+            'data-table="patients" data-pk="1" data-column="is_active" value="1" '
+            'aria-label="Ενεργός ασθενής 1" checked',
+            html,
+        )
+        self.assertIn(
+            'data-table="patients" data-pk="2" data-column="is_active" value="1" '
+            'aria-label="Ενεργός ασθενής 2" >',
+            html,
+        )
+        header = html.split("<thead><tr>", 1)[1].split("</tr></thead>", 1)[0]
+        self.assertLess(header.index("Ενέργεια"), header.index("Κινητό"))
+        self.assertLess(header.index("Κινητό"), header.index("Αριθμός Ταυτότητας"))
+        self.assertLess(header.index("Αριθμός Ταυτότητας"), header.index("Γέννηση"))
+
+    def test_activation_page_lists_active_and_inactive_histories(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) "
+            "VALUES(2,2,'2026-08-19','Ανενεργό ιστορικό',0,0)"
+        )
+        con.commit()
+        con.close()
+
+        html = self.client.get("/activation?sort=history_id&dir=asc").get_data(as_text=True)
+        self.assertIn("Ενεργοποίηση / Απενεργοποίηση", html)
+        self.assertIn('data-history="1"', html)
+        self.assertIn('data-history="2"', html)
+        self.assertIn('data-history="1" aria-label="Ενεργό ιστορικό 1" checked', html)
+        self.assertIn('data-history="2" aria-label="Ενεργό ιστορικό 2" ', html)
+
+    def test_activation_page_keeps_three_sort_levels_and_directions(self):
+        con = sqlite3.connect(self.db_path)
+        con.executemany(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) "
+            "VALUES(?,?,?,?,0,0)",
+            [
+                (2, 2, "2026-08-19", "Δεύτερο",),
+                (3, 1, "2026-08-18", "Τρίτο",),
+                (4, 2, "2026-08-17", "Τέταρτο",),
+            ],
+        )
+        con.commit()
+        con.close()
+
+        html = self.client.get(
+            "/activation?sort=history_active,patient_id,history_id&dir=asc,desc,desc"
+        ).get_data(as_text=True)
+        positions = [html.index(f'data-history="{history_id}"') for history_id in (4, 2, 3, 1)]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn('class="sort-priority"', html)
+
     def test_current_summary_keeps_only_diagnosis(self):
         html = self.client.get("/current?history_id=1").get_data(as_text=True)
         summary = html.split('<div class="summary-line">', 1)[1].split(
-            '</div><div class="problem-box">', 1
+            '</div><label class="history-comments">', 1
         )[0]
         self.assertIn("Ώμος", summary)
         self.assertEqual(summary.count("<span>"), 1)
         self.assertNotIn("#1", summary)
         self.assertNotIn("Ναι", summary)
+
+    def test_current_history_comments_are_editable_and_presence_delete_requires_selection(self):
+        html = self.client.get("/current?history_id=1").get_data(as_text=True)
+        self.assertIn(
+            'class="problem-box autosave" data-table="clinical_histories" '
+            'data-pk="1" data-column="problem_description"',
+            html,
+        )
+        self.assertIn(
+            '<button id="delete-appointment" class="danger-btn" type="button" disabled>'
+            'Διαγραφή παρουσίας</button>',
+            html,
+        )
+        self.assertIn('data-appointment="1" tabindex="0" aria-selected="false"', html)
+        javascript = (Path(__file__).parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Θα διαγραφεί η επιλεγμένη παρουσία και η πληρωμή της.", javascript)
 
     def test_current_shows_session_totals_between_title_and_new_button(self):
         con = sqlite3.connect(self.db_path)
@@ -801,6 +996,51 @@ class PhysioAppTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn(".data-table th:not(:last-child)", stylesheet)
         self.assertIn(".data-table td:not(:last-child)", stylesheet)
+
+    def test_topbar_has_requested_navigation_order(self):
+        html = self.client.get("/patients").get_data(as_text=True)
+        nav = html.split('<nav id="main-nav">', 1)[1].split("</nav>", 1)[0]
+        labels = ["Ασθενείς", "Ιστορικά", "Ενεργοποίηση", "Ημερήσια", "Σήμερα", "Ρυθμίσεις", "Αναίρεση"]
+        positions = [nav.index(label) for label in labels]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("Ενεργά ιστορικά", nav)
+
+    def test_today_screen_uses_selected_appointment_date_and_includes_inactive_records(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,social_security,gesy_referral,is_active,today) "
+            "VALUES(2,2,'2026-08-19','Ιδιωτική','Γ123',0,0)"
+        )
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) "
+            "VALUES(2,2,1,'2026-08-21')"
+        )
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) "
+            "VALUES(3,2,2,'2026-08-21')"
+        )
+        con.commit()
+        con.close()
+
+        html = self.client.get("/today?date=21/08/2026").get_data(as_text=True)
+        self.assertIn("Σήμερα — 21/08/2026", html)
+        header = html.split("<thead><tr>", 1)[1].split("</tr></thead>", 1)[0]
+        labels = [
+            "Ασθενής ID", "Ιστορικό ID", "Επώνυμο", "Όνομα",
+            "Κοινωνική ασφάλιση", "Παραπεμπτικό ΓεΣΥ", "Γέννηση",
+            "Αριθμός ταυτότητας", "Κινητό",
+        ]
+        positions = [header.index(label) for label in labels]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(html.count('href="/histories/2"'), 1)
+        self.assertIn('data-table="clinical_histories" data-pk="2" data-column="social_security"', html)
+        self.assertIn('data-table="patients" data-pk="2" data-column="mobile_phone"', html)
+        self.assertIn('name="date" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="21/08/2026"', html)
+        self.assertIn('id="today-native-date" type="date" value="2026-08-21"', html)
+        self.assertIn('aria-sort="ascending"', header)
+
+        empty = self.client.get("/today?date=22/08/2026").get_data(as_text=True)
+        self.assertIn("Δεν υπάρχουν καταχωρημένα ραντεβού", empty)
 
     def test_validation_errors_only_mark_meaningful_submitted_values_dirty(self):
         unchanged = self.client.post("/patients/new", data={
