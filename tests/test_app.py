@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from app import create_app
+from physio_core import migrate_receipt_amount
 
 
 SCHEMA = """
@@ -56,7 +57,7 @@ CREATE TABLE appointments (
 CREATE TABLE payments (
     payment_id INTEGER PRIMARY KEY AUTOINCREMENT, appointment_id INTEGER NOT NULL,
     payment_date TEXT, amount_due REAL DEFAULT 0, amount_paid REAL DEFAULT 0,
-    receipt_number TEXT, payment_method TEXT, notes TEXT,
+    receipt_amount REAL DEFAULT 0, payment_method TEXT, notes TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (appointment_id) REFERENCES appointments(appointment_id)
 );
@@ -73,7 +74,7 @@ def create_sample_db(path: Path) -> None:
     con.execute("INSERT INTO patients(patient_id,first_name,last_name,mobile_phone,is_active) VALUES(2,'ΜΑΡΙΑ','ΑΝΔΡΕΟΥ','99222222',1)")
     con.execute("INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) VALUES(1,1,'2026-08-20','Ώμος',1,1)")
     con.execute("INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) VALUES(1,1,1,'2026-08-21')")
-    con.execute("INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_number) VALUES(1,'2026-08-21',35,0,'0')")
+    con.execute("INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_amount) VALUES(1,'2026-08-21',35,0,0)")
     con.commit()
     con.close()
 
@@ -146,8 +147,8 @@ class PhysioAppTests(unittest.TestCase):
             "VALUES(2,2,1,'2026-08-23')"
         )
         con.execute(
-            "INSERT INTO payments(payment_id,appointment_id,payment_date,amount_due,amount_paid,receipt_number) "
-            "VALUES(2,2,'2026-08-23',35,10,'2')"
+            "INSERT INTO payments(payment_id,appointment_id,payment_date,amount_due,amount_paid,receipt_amount) "
+            "VALUES(2,2,'2026-08-23',35,10,2)"
         )
         con.commit()
         con.close()
@@ -204,6 +205,17 @@ class PhysioAppTests(unittest.TestCase):
         body = appointment.get_json()
         self.assertGreater(body["appointment_id"], 0)
         self.assertGreater(body["payment_id"], 0)
+        self.assertEqual(body["receipt_amount"], 0)
+        self.assertNotIn("receipt_number", body)
+        con = sqlite3.connect(self.db_path)
+        self.assertEqual(
+            con.execute(
+                "SELECT receipt_amount FROM payments WHERE payment_id=?",
+                (body["payment_id"],),
+            ).fetchone()[0],
+            0.0,
+        )
+        con.close()
 
     def test_new_appointment_rejects_a_second_presence_on_the_same_day(self):
         con = sqlite3.connect(self.db_path)
@@ -392,6 +404,34 @@ class PhysioAppTests(unittest.TestCase):
         con.close()
         self.assertEqual(value, 35)
 
+    def test_receipt_amount_is_real_money_and_updates_through_payment_api(self):
+        con = sqlite3.connect(self.db_path)
+        columns = {row[1]: row[2] for row in con.execute("PRAGMA table_info(payments)")}
+        con.close()
+        self.assertEqual(columns["receipt_amount"], "REAL")
+        self.assertNotIn("receipt_number", columns)
+
+        response = self.client.post("/api/update", json={
+            "table": "payments", "pk": 1,
+            "column": "receipt_amount", "value": "20,00",
+        }, headers=self.api_headers())
+        self.assertEqual(response.status_code, 200)
+
+        con = sqlite3.connect(self.db_path)
+        value, storage_type = con.execute(
+            "SELECT receipt_amount, typeof(receipt_amount) FROM payments WHERE payment_id=1"
+        ).fetchone()
+        con.close()
+        self.assertEqual(value, 20.0)
+        self.assertEqual(storage_type, "real")
+
+        html = self.client.get("/current?history_id=1").get_data(as_text=True)
+        self.assertIn('data-column="receipt_amount" value="20.00"', html)
+        self.assertIn(
+            '<span>Αποδείξεις</span><strong data-session-total="receipts">20.00</strong>',
+            html,
+        )
+
     def test_text_plain_json_is_rejected(self):
         response = self.client.post(
             "/api/settings", data='{"default_amount_due":"99"}',
@@ -494,7 +534,7 @@ class PhysioAppTests(unittest.TestCase):
         self.assertEqual(patient_detail_html.count('class="autocomplete-toggle"'), 4)
         self.assertIn('data-autocomplete-create="profession"', patient_detail_html)
         self.assertNotIn('autocomplete="off"', patient_detail_html)
-        self.assertIn('app.js?v=20260829-today-attendance-controls', patient_detail_html)
+        self.assertIn('app.js?v=20260830-record-counts', patient_detail_html)
         self.assertNotIn('autocomplete="family-name"', patient_html)
         self.assertNotIn('autocomplete="street-address"', patient_html)
         self.assertNotIn('autocomplete="tel"', patient_html)
@@ -801,7 +841,7 @@ class PhysioAppTests(unittest.TestCase):
             "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) VALUES(2,1,2,'2026-08-22')"
         )
         con.execute(
-            "INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_number) VALUES(2,'2026-08-22',15.5,10,'5')"
+            "INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_amount) VALUES(2,'2026-08-22',15.5,10,5)"
         )
         con.commit()
         con.close()
@@ -815,7 +855,7 @@ class PhysioAppTests(unittest.TestCase):
         self.assertIn('<span>Αποδείξεις</span><strong data-session-total="receipts">5.00</strong>', toolbar)
         self.assertNotIn("Σύνολο Χρέωσης", toolbar)
 
-    def test_current_filters_daily_active_histories_active_patients_and_all(self):
+    def test_current_filters_keep_direct_views_but_show_only_daily_and_active_histories(self):
         con = sqlite3.connect(self.db_path)
         con.execute(
             "INSERT INTO patients(patient_id,first_name,last_name,is_active) VALUES(3,'ΑΝΕΝΕΡΓΟΣ','ΑΣΘΕΝΗΣ',0)"
@@ -848,14 +888,13 @@ class PhysioAppTests(unittest.TestCase):
                         self.assertNotIn(marker, html)
 
         default_html = self.client.get("/current").get_data(as_text=True)
-        for key, label in (
-            ("today", "Ημερήσια"),
-            ("active_histories", "Ενεργά ιστορικά"),
-            ("active_patients", "Ενεργός ασθενής"),
-            ("all", "Όλες οι εγγραφές"),
-        ):
+        for key, label in (("today", "Ημερήσια"), ("active_histories", "Ενεργά ιστορικά")):
             self.assertIn(f'data-current-filter="{key}"', default_html)
             self.assertIn(label, default_html)
+        self.assertNotIn('data-current-filter="active_patients"', default_html)
+        self.assertNotIn('data-current-filter="all"', default_html)
+        self.assertNotIn("Ενεργός ασθενής", default_html)
+        self.assertNotIn("Όλες οι εγγραφές", default_html)
         self.assertIn('data-current-filter="today" href="/current?view=today" aria-current="page"', default_html)
 
     def test_deactivating_history_clears_today_and_undo_restores_both(self):
@@ -977,6 +1016,8 @@ class PhysioAppTests(unittest.TestCase):
             self.assertIn('class="screen-actions"', html)
             self.assertIn('aria-label="Επιστροφή"', html)
             self.assertIn('aria-label="Κλείσιμο και επιστροφή στην αρχική"', html)
+            header = html.split('<header class="topbar">', 1)[1].split("</header>", 1)[0]
+            self.assertLess(header.index('class="screen-actions"'), header.index('id="save-status"'))
         new_patient = self.client.get("/patients/new").get_data(as_text=True)
         self.assertIn("data-dirty-form", new_patient)
         javascript = (Path(__file__).parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
@@ -996,6 +1037,55 @@ class PhysioAppTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn(".data-table th:not(:last-child)", stylesheet)
         self.assertIn(".data-table td:not(:last-child)", stylesheet)
+
+    def test_current_header_is_one_six_field_row_and_comments_are_compact(self):
+        html = self.client.get("/current?history_id=1").get_data(as_text=True)
+        header = html.split('<div class="current-header-grid">', 1)[1].split("</div>\n    <div class=\"history-summary\"", 1)[0]
+        for label in (
+            "Όνομα", "Επώνυμο", "Ημερομηνία γέννησης", "Αριθμός ταυτότητας",
+            "Κοινωνική ασφάλιση", "Παραπεμπτικό ΓεΣΥ",
+        ):
+            self.assertIn(f'<span class="label">{label}</span>', header)
+        for removed_label in (
+            "Ασθενής ID", "Ιστορικό ID", "Κινητό", "Ημερομηνία ιστορικού", "Ενεργό ιστορικό",
+        ):
+            self.assertNotIn(f'<span class="label">{removed_label}</span>', header)
+        self.assertEqual(header.count('<span class="label">'), 6)
+
+        stylesheet = (Path(__file__).parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
+        self.assertIn(".current-header-grid { display: grid; grid-template-columns: repeat(6,", stylesheet)
+        self.assertIn(".history-comments { display: block; margin-top: 3px;", stylesheet)
+        self.assertIn("min-height: 90px", stylesheet)
+
+    def test_all_spreadsheet_screens_show_matching_and_database_record_counts(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute(
+            "INSERT INTO clinical_histories(history_id,patient_id,history_date,main_diagnosis,is_active,today) "
+            "VALUES(2,2,'2026-08-22','Γόνατο',0,0)"
+        )
+        con.execute(
+            "INSERT INTO appointments(appointment_id,history_id,appointment_number,appointment_date) "
+            "VALUES(2,2,1,'2026-08-22')"
+        )
+        con.commit()
+        con.close()
+
+        expected = {
+            "/patients?q=αλ": (1, 2, "1 εγγραφή από 2"),
+            "/active": (1, 2, "1 εγγραφή από 2"),
+            "/activation": (2, 2, "2 εγγραφές από 2"),
+            "/today?date=21/08/2026": (1, 2, "1 εγγραφή από 2"),
+            "/current?history_id=1": (1, 2, "1 εγγραφή από 2"),
+        }
+        for path, (visible, total, label) in expected.items():
+            with self.subTest(path=path):
+                html = self.client.get(path).get_data(as_text=True)
+                self.assertIn(
+                    f'data-record-count data-visible-count="{visible}" '
+                    f'data-total-count="{total}"',
+                    html,
+                )
+                self.assertIn(label, html)
 
     def test_topbar_has_requested_navigation_order(self):
         html = self.client.get("/patients").get_data(as_text=True)
@@ -1036,7 +1126,16 @@ class PhysioAppTests(unittest.TestCase):
         self.assertIn('data-table="clinical_histories" data-pk="2" data-column="social_security"', html)
         self.assertIn('data-table="patients" data-pk="2" data-column="mobile_phone"', html)
         self.assertIn('name="date" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="21/08/2026"', html)
-        self.assertIn('id="today-native-date" type="date" value="2026-08-21"', html)
+        self.assertIn('id="today-calendar-button" class="calendar-picker" type="button"', html)
+        self.assertIn(
+            'id="today-native-date" type="date" value="2026-08-21" '
+            'data-default-date="2026-08-21"',
+            html,
+        )
+        script = (Path(self.app.static_folder) / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("todayNativeDate.showPicker()", script)
+        self.assertIn("todayNativeDate.dataset.defaultDate", script)
+        self.assertIn("legacyPicker.replaceWith(todayCalendarButton)", script)
         self.assertIn('aria-sort="ascending"', header)
 
         empty = self.client.get("/today?date=22/08/2026").get_data(as_text=True)
@@ -1066,6 +1165,65 @@ class PhysioAppTests(unittest.TestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store, max-age=0")
         rejected = self.client.post("/api/update", json={})
         self.assertEqual(rejected.status_code, 400)
+
+
+class ReceiptAmountMigrationTests(unittest.TestCase):
+    def test_legacy_receipt_column_is_renamed_preserved_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db_path = root / "legacy.db"
+            meta_path = root / "meta.db"
+            backup_dir = root / "backups"
+            con = sqlite3.connect(db_path)
+            con.executescript("""
+                CREATE TABLE payments (
+                    payment_id INTEGER PRIMARY KEY,
+                    appointment_id INTEGER NOT NULL,
+                    amount_due REAL DEFAULT 0,
+                    amount_paid REAL DEFAULT 0,
+                    receipt_number TEXT
+                );
+                INSERT INTO payments(
+                    payment_id, appointment_id, amount_due, amount_paid, receipt_number
+                ) VALUES(7, 11, 40.0, 40.0, 20.0);
+            """)
+            con.commit()
+            con.close()
+
+            config = {
+                "TESTING": True,
+                "DB_PATH": str(db_path),
+                "META_DB_PATH": str(meta_path),
+                "BACKUP_DIR": str(backup_dir),
+                "AUTO_BACKUP": False,
+            }
+            first_app = create_app(config)
+
+            con = sqlite3.connect(db_path)
+            columns = [row[1] for row in con.execute("PRAGMA table_info(payments)")]
+            migrated = con.execute(
+                "SELECT payment_id, appointment_id, amount_due, amount_paid, receipt_amount "
+                "FROM payments WHERE payment_id=7"
+            ).fetchone()
+            con.close()
+            self.assertIn("receipt_amount", columns)
+            self.assertNotIn("receipt_number", columns)
+            self.assertEqual(migrated, (7, 11, 40.0, 40.0, "20.0"))
+            self.assertEqual(len(list(backup_dir.glob("legacy_*.db"))), 1)
+
+            second_app = create_app(config)
+            self.assertFalse(migrate_receipt_amount(second_app))
+            self.assertEqual(len(list(backup_dir.glob("legacy_*.db"))), 1)
+
+            con = sqlite3.connect(db_path)
+            self.assertEqual(
+                con.execute(
+                    "SELECT payment_id, appointment_id, receipt_amount FROM payments"
+                ).fetchall(),
+                [(7, 11, "20.0")],
+            )
+            con.close()
+            self.assertIsNotNone(first_app)
 
 
 if __name__ == "__main__":

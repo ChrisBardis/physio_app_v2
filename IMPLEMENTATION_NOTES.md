@@ -11,8 +11,11 @@
 ## Κλινική βάση
 
 Η εφαρμογή χρησιμοποιεί το υπάρχον schema και δεν προσθέτει κλινικούς πίνακες ή
-indexes. Τα `INTEGER PRIMARY KEY` IDs παράγονται από τη SQLite και διαβάζονται με
-`cursor.lastrowid`.
+indexes. Κατά την εκκίνηση, μετά από υποχρεωτικό ελεγμένο backup, μετονομάζει μόνο
+το παλιό `payments.receipt_number` σε `payments.receipt_amount`, εφόσον δεν υπάρχει
+ήδη το νέο column. Η migration είναι idempotent και χρησιμοποιεί SQLite
+`ALTER TABLE ... RENAME COLUMN`, χωρίς rebuild πίνακα. Τα `INTEGER PRIMARY KEY` IDs
+παράγονται από τη SQLite και διαβάζονται με `cursor.lastrowid`.
 
 ## Meta βάση και Undo
 
@@ -29,7 +32,8 @@ indexes. Τα `INTEGER PRIMARY KEY` IDs παράγονται από τη SQLite 
 
 ## Επικύρωση
 
-- Τα ποσά πρέπει να είναι πεπερασμένα, μη αρνητικά και έως 1.000.000.
+- Τα `amount_due`, `amount_paid` και `receipt_amount` είναι χρηματικά ποσά: πρέπει
+  να είναι πεπερασμένα, μη αρνητικά και έως 1.000.000.
 - Ημερομηνίες αποθηκεύονται μόνο ως έγκυρο ISO `YYYY-MM-DD`.
 - Boolean τιμές περιορίζονται σε 0/1.
 - Αριθμητικά foreign keys και αριθμοί συνεδρίας πρέπει να είναι θετικοί ακέραιοι.

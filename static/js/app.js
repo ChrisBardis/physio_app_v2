@@ -178,7 +178,7 @@ function updateSessionTotals() {
   const columns = {
     due: 'amount_due',
     credit: 'amount_paid',
-    receipts: 'receipt_number',
+    receipts: 'receipt_amount',
   };
   Object.entries(columns).forEach(([totalName, column]) => {
     const output = document.querySelector(`[data-session-total="${totalName}"]`);
@@ -254,10 +254,36 @@ function enlargeFieldTextWithoutResizing(root = document) {
 }
 
 function initializeInteractiveElements(root = document) {
+  upgradeCachedLayout(root);
   suppressBrowserAutocomplete(root);
   enlargeFieldTextWithoutResizing(root);
   root.querySelectorAll('.autosave').forEach(bindAutosave);
   root.querySelectorAll('.payment-input').forEach(bindPayment);
+}
+
+function upgradeCachedLayout(root = document) {
+  const topbar = root.querySelector('.topbar');
+  const saveStatus = root.querySelector('#save-status');
+  const screenActions = root.querySelector('.screen-actions');
+  if (topbar && saveStatus && !saveStatus.closest('.topbar-status-group')) {
+    const statusGroup = document.createElement('div');
+    statusGroup.className = 'topbar-status-group';
+    saveStatus.insertAdjacentElement('beforebegin', statusGroup);
+    if (screenActions) statusGroup.appendChild(screenActions);
+    statusGroup.appendChild(saveStatus);
+  }
+
+  root.querySelectorAll(
+    '[data-current-filter="active_patients"], [data-current-filter="all"]',
+  ).forEach(element => element.remove());
+
+  const hiddenCurrentFields = new Set([
+    'Ασθενής ID', 'Ιστορικό ID', 'Κινητό', 'Ημερομηνία ιστορικού', 'Ενεργό ιστορικό',
+  ]);
+  root.querySelectorAll('.current-header-grid > div').forEach(field => {
+    const label = field.querySelector('.label')?.textContent.trim();
+    if (hiddenCurrentFields.has(label)) field.remove();
+  });
 }
 
 function formSnapshot(form) {
@@ -626,6 +652,52 @@ deleteAppointment?.addEventListener('click', async () => {
 
 const todayDateInput = document.getElementById('today-date');
 const todayNativeDate = document.getElementById('today-native-date');
+let todayCalendarButton = document.getElementById('today-calendar-button');
+
+// Upgrade a page still held in the server's template cache while the application restarts.
+if (!todayCalendarButton && todayNativeDate) {
+  const legacyPicker = todayNativeDate.closest('.calendar-picker');
+  if (legacyPicker) {
+    todayCalendarButton = document.createElement('button');
+    todayCalendarButton.id = 'today-calendar-button';
+    todayCalendarButton.className = 'calendar-picker';
+    todayCalendarButton.type = 'button';
+    todayCalendarButton.title = 'Επιλογή ημερομηνίας από ημερολόγιο';
+    todayCalendarButton.textContent = 'Ημερολόγιο';
+    legacyPicker.replaceWith(todayCalendarButton);
+    todayCalendarButton.insertAdjacentElement('afterend', todayNativeDate);
+  }
+}
+
+function isoDateFromDisplay(value) {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value.trim());
+  if (!match) return '';
+  const iso = `${match[3]}-${match[2]}-${match[1]}`;
+  const parsed = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso ? '' : iso;
+}
+
+todayCalendarButton?.addEventListener('click', () => {
+  if (!todayNativeDate) return;
+  const visibleDate = todayDateInput ? isoDateFromDisplay(todayDateInput.value) : '';
+  const selectedDate = todayNativeDate.dataset.defaultDate
+    || todayDateInput?.form?.dataset.selectedDate
+    || isoDateFromDisplay(new URL(window.location.href).searchParams.get('date') || '')
+    || '';
+  if (!todayNativeDate.value) todayNativeDate.value = visibleDate || selectedDate;
+
+  if (typeof todayNativeDate.showPicker === 'function') {
+    try {
+      todayNativeDate.showPicker();
+      return;
+    } catch (_) {
+      // Older browsers continue with the compatible native click below.
+    }
+  }
+  todayNativeDate.focus({preventScroll: true});
+  todayNativeDate.click();
+});
+
 todayNativeDate?.addEventListener('change', () => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(todayNativeDate.value);
   if (!match || !todayDateInput) return;

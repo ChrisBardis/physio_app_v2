@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ΦΥΣΙΟ{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260829-today-attendance-controls') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260830-record-counts') }}">
   <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body>
@@ -20,19 +20,21 @@
       <a href="{{ url_for('settings') }}">Ρυθμίσεις</a>
       <button id="undo-button" class="nav-action" type="button">Αναίρεση</button>
     </nav>
-    <div id="save-status" class="save-status">Έτοιμο</div>
+    <div class="topbar-status-group">
+      {% if request.endpoint != 'home' %}
+      <div class="screen-actions" aria-label="Ενέργειες οθόνης">
+        <a class="screen-action" href="{% block back_url %}{{ url_for('home') }}{% endblock %}" title="Επιστροφή" aria-label="Επιστροφή">←</a>
+        <a class="screen-action" href="{{ url_for('home') }}" title="Κλείσιμο και επιστροφή στην αρχική" aria-label="Κλείσιμο και επιστροφή στην αρχική">X</a>
+      </div>
+      {% endif %}
+      <div id="save-status" class="save-status">Έτοιμο</div>
+    </div>
   </header>
   <main class="page-shell">
-    {% if request.endpoint != 'home' %}
-    <div class="screen-actions" aria-label="Ενέργειες οθόνης">
-      <a class="screen-action" href="{% block back_url %}{{ url_for('home') }}{% endblock %}" title="Επιστροφή" aria-label="Επιστροφή">←</a>
-      <a class="screen-action" href="{{ url_for('home') }}" title="Κλείσιμο και επιστροφή στην αρχική" aria-label="Κλείσιμο και επιστροφή στην αρχική">X</a>
-    </div>
-    {% endif %}
     {% block content %}{% endblock %}
   </main>
   <div id="toast" class="toast" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='js/app.js', v='20260829-today-attendance-controls') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js', v='20260830-record-counts') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

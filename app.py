@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import sqlite3
@@ -35,6 +36,7 @@ from physio_core import (
     get_setting,
     init_meta_db,
     log_change,
+    migrate_receipt_amount,
     normalize_search_text,
     normalize_value,
     set_setting,
@@ -62,7 +64,7 @@ FIELD_LABELS = {
     "today": "Εμφάνιση στην Ημερήσια", "history_date": "Ημερομηνία ιστορικού",
     "main_diagnosis": "Κύρια διάγνωση", "problem_description": "Περιγραφή προβλήματος",
     "appointment_number": "Αριθμός συνεδρίας", "appointment_date": "Ημερομηνία συνεδρίας",
-    "amount_due": "Χρέωση", "amount_paid": "Πληρωμή", "receipt_number": "Απόδειξη",
+    "amount_due": "Χρέωση", "amount_paid": "Πληρωμή", "receipt_amount": "Απόδειξη",
     "notes": "Σημειώσεις",
 }
 
@@ -143,6 +145,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     init_meta_db(app.config["META_DB_PATH"])
     app.secret_key = get_setting(app, "secret_key", secrets.token_hex(32))
 
+    migrate_receipt_amount(app)
+
     if app.config.get("AUTO_BACKUP"):
         try:
             create_backup(app)
@@ -167,6 +171,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return f"{float(value or 0):.2f} €".replace(".", ",")
         except (TypeError, ValueError):
             return "0,00 €"
+
+    @app.template_filter("moneyvalue")
+    def moneyvalue(value: Any) -> str:
+        try:
+            number = float(str(value or 0).strip().replace(",", "."))
+            return f"{number:.2f}" if math.isfinite(number) else ""
+        except (TypeError, ValueError):
+            return ""
 
     @app.before_request
     def csrf_protection():
@@ -287,11 +299,18 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         if wants_list_batch():
             return list_batch_response("_today_rows.html", rows, offset, has_more)
+        visible_count = query_count(
+            app,
+            "FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id",
+            ["EXISTS (SELECT 1 FROM appointments a WHERE a.history_id=h.history_id AND a.appointment_date=?)"],
+            [selected_date],
+        )
+        total_count = query_count(app, "FROM clinical_histories", [], [])
         return render_template(
             "today.html", rows=rows, selected_date=selected_date,
             has_more=has_more, next_offset=offset + len(rows),
             batch_size=LIST_BATCH_SIZE, current_sort=sort_key,
-            current_dir=sort_dir,
+            current_dir=sort_dir, visible_count=visible_count, total_count=total_count,
         )
 
     @app.route("/active")
@@ -326,10 +345,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return list_batch_response(
                 "_active_rows.html", rows, offset, has_more,
             )
+        visible_count = query_count(
+            app,
+            "FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id",
+            where, params,
+        )
+        total_count = query_count(app, "FROM clinical_histories", [], [])
         return render_template(
             "active.html", rows=rows, q=q, has_more=has_more,
             next_offset=offset + len(rows), batch_size=LIST_BATCH_SIZE,
             current_sort=sort_key, current_dir=sort_dir,
+            visible_count=visible_count, total_count=total_count,
         )
 
     @app.route("/activation")
@@ -370,10 +396,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return list_batch_response(
                 "_activation_rows.html", rows, offset, has_more,
             )
+        visible_count = query_count(
+            app,
+            "FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id",
+            where, params,
+        )
+        total_count = query_count(app, "FROM clinical_histories", [], [])
         return render_template(
             "activation.html", rows=rows, q=q, has_more=has_more,
             next_offset=offset + len(rows), batch_size=LIST_BATCH_SIZE,
             current_sorts=current_sorts, sort_state=sort_state,
+            visible_count=visible_count, total_count=total_count,
         )
 
     @app.route("/patients")
@@ -415,10 +448,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return list_batch_response(
                 "_patient_rows.html", rows, offset, has_more,
             )
+        visible_count = query_count(app, "FROM patients p", where, params)
+        total_count = query_count(app, "FROM patients", [], [])
         return render_template(
             "patients.html", rows=rows, q=q, has_more=has_more,
             next_offset=offset + len(rows), batch_size=LIST_BATCH_SIZE,
             current_sort=sort_key, current_dir=sort_dir,
+            visible_count=visible_count, total_count=total_count,
         )
 
     @app.route("/patients/new", methods=["GET", "POST"])
@@ -623,16 +659,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             current_view = "today"
         current_view_definition = current_view_definitions[current_view]
         current_filters = [
-            (key, definition["label"])
-            for key, definition in current_view_definitions.items()
+            (key, current_view_definitions[key]["label"])
+            for key in ("today", "active_histories")
         ]
         sort_map = {
             "number": "a.appointment_number", "date": "a.appointment_date",
             "due": "pay.amount_due", "paid": "pay.amount_paid",
-            "receipt": "PYCASEFOLD(pay.receipt_number)", "notes": "PYCASEFOLD(a.notes)",
+            "receipt": "CAST(pay.receipt_amount AS REAL)", "notes": "PYCASEFOLD(a.notes)",
         }
         sort_key, sort_dir = validated_sort(sort_map, "number")
         with db_conn(app) as con:
+            total_count = con.execute("SELECT COUNT(*) FROM appointments").fetchone()[0]
             current_rows = con.execute(f"""
                 SELECT h.history_id, h.patient_id, h.history_date, h.main_diagnosis,
                        p.first_name, p.last_name
@@ -648,6 +685,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     current_view=current_view, current_view_label=current_view_definition["label"],
                     current_empty_message=current_view_definition["empty"], current_filters=current_filters,
                     current_sort=sort_key, current_dir=sort_dir,
+                    visible_count=0, total_count=total_count,
                 )
             valid_ids = {row["history_id"] for row in current_rows}
             if not history_id or history_id not in valid_ids:
@@ -661,7 +699,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             appointments = con.execute(f"""
                 SELECT a.appointment_id, a.appointment_number, a.appointment_date, a.appointment_time,
                        a.notes, a.status, a.today,
-                       pay.payment_id, pay.amount_due, pay.amount_paid, pay.receipt_number
+                       pay.payment_id, pay.amount_due, pay.amount_paid, pay.receipt_amount
                 FROM appointments a
                 LEFT JOIN payments pay ON pay.payment_id = (
                     SELECT p2.payment_id FROM payments p2
@@ -687,7 +725,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         appointment_totals = {
             "due": appointment_total("amount_due"),
             "credit": appointment_total("amount_paid"),
-            "receipts": appointment_total("receipt_number"),
+            "receipts": appointment_total("receipt_amount"),
         }
         return render_template(
             "current.html", current_rows=current_rows, history=history, appointments=appointments,
@@ -695,6 +733,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             current_view=current_view, current_view_label=current_view_definition["label"],
             current_empty_message=current_view_definition["empty"], current_filters=current_filters,
             current_sort=sort_key, current_dir=sort_dir,
+            visible_count=len(appointments), total_count=total_count,
         )
 
     @app.route("/settings")
@@ -1152,9 +1191,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             """, (history_id, next_no, today_iso))
             appointment_id = cur.lastrowid
             cur = con.execute("""
-                INSERT INTO payments(appointment_id, payment_date, amount_due, amount_paid, receipt_number)
+                INSERT INTO payments(appointment_id, payment_date, amount_due, amount_paid, receipt_amount)
                 VALUES(?,?,?,?,?)
-            """, (appointment_id, today_iso, default_due, 0, "0"))
+            """, (appointment_id, today_iso, default_due, 0, 0))
             payment_id = cur.lastrowid
             log_change(
                 con, app, "insert_appointment", "appointments", "appointment_id", appointment_id,
@@ -1164,7 +1203,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return jsonify(
             ok=True, appointment_id=appointment_id, payment_id=payment_id,
             appointment_number=next_no, appointment_date=today_iso,
-            amount_due=default_due, amount_paid=0, receipt_number="0",
+            amount_due=default_due, amount_paid=0, receipt_amount=0,
         )
 
     @app.post("/api/payment/ensure/<int:appointment_id>")
@@ -1192,9 +1231,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             except (LookupError, ValidationError) as exc:
                 return jsonify(ok=False, error=f"Δεν υπολογίστηκε η αυτόματη χρέωση: {exc}"), 400
             cur = con.execute("""
-                INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_number)
+                INSERT INTO payments(appointment_id,payment_date,amount_due,amount_paid,receipt_amount)
                 VALUES(?,?,?,?,?)
-            """, (appointment_id, appointment["appointment_date"], default_due, 0, "0"))
+            """, (appointment_id, appointment["appointment_date"], default_due, 0, 0))
             payment_id = cur.lastrowid
             log_change(
                 con, app, "insert", "payments", "payment_id", payment_id, None, None,
@@ -1306,6 +1345,16 @@ def add_normalized_search(
                 for expr in expressions
             ]
         )
+
+
+def query_count(
+    app: Flask, from_sql: str, where: list[str], params: list[Any],
+) -> int:
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    with db_conn(app) as con:
+        return int(con.execute(
+            f"SELECT COUNT(*) {from_sql}{where_sql}", params,
+        ).fetchone()[0])
 
 
 def batched_query(

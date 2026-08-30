@@ -5,14 +5,12 @@
 <section class="panel">
   <div class="panel-header">
     <div><h1>Σήμερα — {{ selected_date|grdate }}</h1><p>Ιστορικά με καταχωρημένο ραντεβού την επιλεγμένη ημερομηνία</p></div>
-    <form class="date-navigation" method="get" action="{{ url_for('today_appointments') }}">
+    <form class="date-navigation" method="get" action="{{ url_for('today_appointments') }}" data-selected-date="{{ selected_date }}">
       <label for="today-date">Ημερομηνία</label>
       <div class="date-input-with-calendar">
         <input id="today-date" name="date" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ selected_date|grdate }}">
-        <label class="calendar-picker" title="Επιλογή ημερομηνίας">
-          <span aria-hidden="true">Ημερολόγιο</span>
-          <input id="today-native-date" type="date" value="{{ selected_date }}" aria-label="Επιλογή ημερομηνίας από ημερολόγιο">
-        </label>
+        <button id="today-calendar-button" class="calendar-picker" type="button" title="Επιλογή ημερομηνίας από ημερολόγιο">Ημερολόγιο</button>
+        <input id="today-native-date" type="date" value="{{ selected_date }}" data-default-date="{{ selected_date }}" aria-label="Επιλογή ημερομηνίας από ημερολόγιο" tabindex="-1">
       </div>
       <button type="submit">Εμφάνιση</button>
     </form>
@@ -27,6 +25,9 @@
       </tbody>
     </table>
   </div>
-  <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
+  <div class="table-footer">
+    {% include '_record_count.html' %}
+    <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
+  </div>
 </section>
 {% endblock %}

@@ -28,11 +28,12 @@ button:disabled, input:disabled, select:disabled { opacity: .62; cursor: wait; }
 .nav-toggle { display: none; margin-left: auto; padding: 8px 11px; border-radius: 5px; }
 
 .page-shell { padding: 18px; max-width: 1600px; margin: auto; }
-.screen-actions { display: flex; justify-content: flex-end; gap: 7px; margin: 0 0 9px; }
+.topbar-status-group { margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
+.screen-actions { display: flex; align-items: center; gap: 7px; margin: 0; }
 .screen-action { width: 34px; height: 34px; display: inline-grid; place-items: center; border: 1px solid #aab5d0; border-radius: 5px; background: #fff; color: #263b77; font-weight: 700; box-shadow: 0 1px 4px #22305c18; }
 .screen-action:hover { background: #eef2fb; }
 .screen-action:focus-visible { outline: 3px solid #6989d055; outline-offset: 2px; }
-.save-status { margin-left: auto; flex: 0 0 auto; background: #fff; border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; font-size: 12px; color: var(--muted); box-shadow: 0 2px 6px #0002; }
+.save-status { flex: 0 0 auto; background: #fff; border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px; font-size: 12px; color: var(--muted); box-shadow: 0 2px 6px #0002; }
 .save-status.saving { color: var(--warning); }
 .save-status.saved { color: var(--ok); }
 .save-status.error { color: var(--danger); }
@@ -55,9 +56,9 @@ button:disabled, input:disabled, select:disabled { opacity: .62; cursor: wait; }
 .date-navigation input { width: 132px; padding: 9px 10px; border: 1px solid #b9c0d2; border-radius: 5px; }
 .date-navigation button { border: 0; border-radius: 5px; padding: 9px 12px; cursor: pointer; background: var(--blue2); color: #fff; }
 .date-input-with-calendar { display: flex; align-items: stretch; gap: 6px; }
-.calendar-picker { position: relative; display: inline-flex; align-items: center; padding: 8px 10px; border: 1px solid #aab5d0; border-radius: 5px; background: #eef2fb; color: #263b77 !important; cursor: pointer; font-weight: 600; }
-.calendar-picker:hover { background: #e1e8f8; }
-.date-navigation .calendar-picker input { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; opacity: 0; cursor: pointer; }
+.calendar-picker { display: inline-flex; align-items: center; padding: 8px 10px; border: 0; border-radius: 5px; background: var(--blue2); color: #fff !important; cursor: pointer; font: inherit; font-weight: 600; }
+.calendar-picker:hover { background: var(--blue); }
+.date-navigation #today-native-date { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
 
 .home-screen { background: linear-gradient(135deg, #0b1286, #12166e); min-height: calc(100vh - 100px); border-radius: 12px; color: #fff; padding: 48px; display: grid; grid-template-columns: 330px 1fr; gap: 50px; align-items: center; }
 .home-mark { text-align: center; }
@@ -108,6 +109,10 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
 .infinite-spacer td { padding: 0 !important; border: 0 !important; height: inherit; }
 .infinite-status { min-height: 43px; padding: 12px 18px; border-top: 1px solid var(--line); color: var(--muted); text-align: center; font-size: 13px; }
 .infinite-status.loading::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; border: 2px solid #aab5d0; border-top-color: var(--blue2); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
+.table-footer { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 18px; border-top: 1px solid var(--line); background: #f8f9fc; }
+.record-count { color: #263b77; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-footer .infinite-status { min-height: 0; padding: 0; border: 0; text-align: right; }
+.sessions-footer { border-top-color: #cbd4e5; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .patient-layout { display: grid; grid-template-columns: minmax(700px, 1fr) 360px; gap: 18px; }
@@ -162,12 +167,12 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
 .current-header-grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 1px; background: #375f8e; padding: 1px; }
 .current-header-grid > div { background: #f8f8f9; color: #1b2442; padding: 8px; }
 .current-header-grid .label { display: block; font-size: 11px; color: #78829a; margin-bottom: 3px; }
-.history-summary { padding: 12px; }
+.history-summary { padding: 7px 12px 8px; }
 .summary-line { display: grid; grid-template-columns: 1fr; gap: 4px; }
 .summary-line > * { background: #fff; color: #172343; padding: 7px; }
-.history-comments { display: block; margin-top: 8px; color: #52607b; font-size: 12px; }
-.history-comments > span { display: block; margin: 0 0 5px 2px; }
-.problem-box { width: 100%; background: #fff; color: #172343; min-height: 110px; padding: 12px; border: 1px solid #b9c0d2; border-radius: 4px; white-space: pre-wrap; resize: vertical; }
+.history-comments { display: block; margin-top: 3px; color: #52607b; font-size: 12px; }
+.history-comments > span { display: block; margin: 0 0 2px 2px; }
+.problem-box { width: 100%; background: #fff; color: #172343; min-height: 90px; padding: 12px; border: 1px solid #b9c0d2; border-radius: 4px; white-space: pre-wrap; resize: vertical; }
 .problem-box:focus { border-color: #5878c8; outline: none; }
 .session-toolbar { display: flex; align-items: center; gap: 14px; padding: 8px 12px; }
 .session-toolbar h2 { margin: 0; }
@@ -205,7 +210,8 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
 @media (max-width: 1000px) {
   .topbar { flex-wrap: wrap; gap: 10px; }
   .nav-toggle { display: inline-block; }
-  .topbar nav { display: none; width: 100%; flex-direction: column; align-items: stretch; padding-bottom: 8px; }
+  .topbar-status-group { order: 1; }
+  .topbar nav { order: 2; display: none; width: 100%; flex-direction: column; align-items: stretch; padding-bottom: 8px; }
   .topbar nav.open { display: flex; }
   .topbar nav a, .nav-action { width: 100%; text-align: left; }
   .home-screen { grid-template-columns: 1fr; padding: 30px; }
@@ -239,4 +245,6 @@ th[aria-sort="ascending"] .sort-button, th[aria-sort="descending"] .sort-button 
   .patient-strip { gap: 10px; }
   .health-grid { grid-template-columns: 1fr; }
   .save-status { top: auto; right: 10px; bottom: 10px; }
+  .table-footer { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .table-footer .infinite-status { text-align: left; }
 }

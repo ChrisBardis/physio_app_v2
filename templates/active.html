@@ -17,6 +17,9 @@
       </tbody>
     </table>
   </div>
-  <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
+  <div class="table-footer">
+    {% include '_record_count.html' %}
+    <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
+  </div>
 </section>
 {% endblock %}

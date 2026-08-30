@@ -29,7 +29,8 @@ chmod +x setup_linux.sh start_linux.sh
 - Όλα τα API εγγραφής απαιτούν CSRF token και έγκυρες τιμές.
 - Το Undo συνδέεται με τη συγκεκριμένη κλινική βάση και επιβεβαιώνεται πριν εκτελεστεί.
 - Οι σελίδες κλινικών δεδομένων στέλνονται με `Cache-Control: no-store`.
-- Το schema της κλινικής βάσης δεν τροποποιείται από την εφαρμογή.
+- Η μόνη αυτόματη αλλαγή schema είναι η ασφαλής, εφάπαξ μετονομασία του παλιού
+  `payments.receipt_number` σε `payments.receipt_amount`, αφού δημιουργηθεί backup.
 
 ## Backup
 
@@ -85,6 +86,12 @@ PHYSIO_BACKUP_DIR=/safe/backups \
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
+
+## Αντιστοίχιση οικονομικών από Microsoft Access
+
+Για μελλοντική μεταφορά δεδομένων: `Reservations.TotalDue` → `payments.amount_due`,
+`Reservations.AmountPaid` → `payments.amount_paid` και `Reservations.Receipt`
+(τύπος `CURRENCY`, ποσό απόδειξης) → `payments.receipt_amount`.
 
 ## Git
 

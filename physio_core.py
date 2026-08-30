@@ -32,7 +32,7 @@ ALLOWED_COLUMNS = {
         "appointment_number", "appointment_date", "appointment_time", "status", "notes", "today",
     },
     "payments": {
-        "payment_date", "amount_due", "amount_paid", "receipt_number", "payment_method", "notes",
+        "payment_date", "amount_due", "amount_paid", "receipt_amount", "payment_method", "notes",
     },
 }
 
@@ -61,6 +61,7 @@ POSITIVE_INT_COLUMNS = {
 MONEY_COLUMNS = {
     ("payments", "amount_due"),
     ("payments", "amount_paid"),
+    ("payments", "receipt_amount"),
 }
 
 DATE_COLUMNS = {
@@ -167,6 +168,48 @@ def init_meta_db(meta_path: str | Path) -> None:
             (secrets.token_hex(32),),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def migrate_receipt_amount(app: Any) -> bool:
+    """Rename the legacy payments receipt column after a verified backup.
+
+    Returns True only when this invocation performed the migration. If the new
+    column already exists, no schema change is made, including when both names
+    are present.
+    """
+    db_path = Path(app.config["DB_PATH"]).resolve()
+    con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=30)
+    try:
+        table_exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='payments'"
+        ).fetchone()
+        if not table_exists:
+            return False
+        columns = {row[1] for row in con.execute("PRAGMA table_info(payments)")}
+    finally:
+        con.close()
+
+    if "receipt_amount" in columns or "receipt_number" not in columns:
+        return False
+
+    create_backup(app, force=True)
+    con = connect_db(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in con.execute("PRAGMA table_info(payments)")}
+        if "receipt_amount" in columns or "receipt_number" not in columns:
+            con.rollback()
+            return False
+        con.execute(
+            'ALTER TABLE payments RENAME COLUMN receipt_number TO receipt_amount'
+        )
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
 

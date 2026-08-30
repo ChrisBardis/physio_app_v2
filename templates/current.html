@@ -14,15 +14,10 @@
   {% if history %}
   <section class="current-main panel">
     <div class="current-header-grid">
-      <div><span class="label">Ασθενής ID</span><strong>{{ history.patient_id }}</strong></div>
       <div><span class="label">Όνομα</span><strong>{{ history.first_name or '' }}</strong></div>
       <div><span class="label">Επώνυμο</span><strong>{{ history.last_name or '' }}</strong></div>
-      <div><span class="label">Κινητό</span><strong>{{ history.mobile_phone or '' }}</strong></div>
       <div><span class="label">Ημερομηνία γέννησης</span><strong>{{ history.birthdate|grdate }}</strong></div>
       <div><span class="label">Αριθμός ταυτότητας</span><strong>{{ history.identity_number or '' }}</strong></div>
-      <div><span class="label">Ιστορικό ID</span><strong>{{ history.history_id }}</strong></div>
-      <div><span class="label">Ημερομηνία ιστορικού</span><strong>{{ history.history_date|grdate }}</strong></div>
-      <div><span class="label">Ενεργό ιστορικό</span><strong>{{ 'Ναι' if history.is_active else 'Όχι' }}</strong></div>
       <div><span class="label">Κοινωνική ασφάλιση</span><strong>{{ history.social_security or '' }}</strong></div>
       <div><span class="label">Παραπεμπτικό ΓεΣΥ</span><strong>{{ history.gesy_referral or '' }}</strong></div>
     </div>
@@ -45,12 +40,13 @@
           <td><input class="grid-input autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_date" value="{{ a.appointment_date|grdate }}"></td>
           <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_due" value="{{ '%.2f'|format(a.amount_due or 0) }}"></td>
           <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_paid" value="{{ '%.2f'|format(a.amount_paid or 0) }}"></td>
-          <td><input class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="receipt_number" value="{{ a.receipt_number or '0' }}"></td>
+          <td><input type="number" step="0.01" min="0" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="receipt_amount" value="{{ a.receipt_amount|moneyvalue }}"></td>
           <td><input class="grid-input autosave" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="notes" value="{{ a.notes or '' }}"></td>
         </tr>
       {% else %}<tr id="no-appointments"><td colspan="6" class="empty">Δεν υπάρχουν συνεδρίες.</td></tr>{% endfor %}
       </tbody></table>
     </div>
+    <div class="table-footer sessions-footer">{% include '_record_count.html' %}</div>
   </section>
   {% else %}
   <section class="panel empty-state current-empty"><h1>{{ current_view_label }}</h1><p>{{ current_empty_message }}</p></section>
