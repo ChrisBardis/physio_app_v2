@@ -4,36 +4,43 @@
 {% block back_url %}{{ url_for('patients') }}{% endblock %}
 {% block content %}
 <section class="patient-layout">
-  <div class="panel patient-form-panel">
-    <div class="panel-header">
-      <div><h1>Στοιχεία ασθενούς</h1><p>Patient ID: <strong>{{ patient.patient_id }}</strong> · αυτόματη αποθήκευση</p></div>
+  <div class="panel patient-form-panel patient-profile-panel">
+    <div class="panel-header patient-profile-header">
+      <div class="patient-identity"><h1>{{ patient.first_name or '' }} {{ patient.last_name or '' }}</h1><p class="patient-summary">{% if patient.identity_number %}Αριθμός ταυτότητας {{ patient.identity_number }} · {% endif %}{% if patient.birthdate %}Γέννηση {{ patient.birthdate|grdate }} · {% endif %}{% if patient.mobile_phone %}Κινητό {{ patient.mobile_phone }}{% endif %}</p><p class="patient-id-note">Patient ID: {{ patient.patient_id }} · αυτόματη αποθήκευση</p></div>
       <div class="panel-header-actions">
         <a class="primary-btn" href="{{ url_for('history_new_picker', patient_id=patient.patient_id) }}">+ Νέο ιστορικό</a>
+        <a class="small-btn" href="{{ url_for('future_appointments', patient_id=patient.patient_id) }}">Νέο ραντεβού</a>
         <button type="button" class="danger-btn delete-patient" data-patient="{{ patient.patient_id }}">Διαγραφή ασθενή</button>
       </div>
     </div>
-    <div class="form-grid two-col">
-      <label>Όνομα{{ autocomplete_autosave_input('patient-first-name', patient.first_name or '', 'first_name', 'patients', patient.patient_id, 'first_name') }}</label>
-      <label>Επώνυμο<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="last_name" value="{{ patient.last_name or '' }}"></label>
-      <label>Διεύθυνση<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="address" value="{{ patient.address or '' }}"></label>
-      <label>Πόλη{{ autocomplete_autosave_input('patient-city', patient.city or '', 'city', 'patients', patient.patient_id, 'city') }}</label>
-      <label>Ταχυδρομικός κώδικας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="postal_code" value="{{ patient.postal_code or '' }}"></label>
-      <label>Φύλο<select class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="gender"><option value="">—</option><option value="Male" {% if patient.gender in ('Male','Κος') %}selected{% endif %}>Άνδρας</option><option value="Female" {% if patient.gender in ('Female','Κα','KA') %}selected{% endif %}>Γυναίκα</option></select></label>
-      <label>Τηλέφωνο εργασίας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="work_phone" value="{{ patient.work_phone or '' }}"></label>
-      <label>Τηλέφωνο οικίας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="home_phone" value="{{ patient.home_phone or '' }}"></label>
-      <label>Κινητό<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="mobile_phone" value="{{ patient.mobile_phone or '' }}"></label>
-      <label>Email<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="email" value="{{ patient.email or '' }}"></label>
-      <label>Ημερομηνία γέννησης<input class="autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="birthdate" value="{{ patient.birthdate|grdate }}"></label>
-      <label>Αριθμός ταυτότητας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="identity_number" value="{{ patient.identity_number or '' }}"></label>
-      <label>Παραπομπή από{{ autocomplete_autosave_input('patient-referral', patient.referral_name or '', 'referral', 'patients', patient.patient_id, 'referral_id', 'referral_id', patient.referral_id or '') }}</label>
-      <label>Επάγγελμα{{ autocomplete_autosave_input('patient-profession', patient.profession_name or '', 'profession', 'patients', patient.patient_id, 'profession_id', 'profession_id', patient.profession_id or '', 'profession') }}</label>
-      <label class="check-label"><input type="checkbox" class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="is_active" value="1" {% if patient.is_active %}checked{% endif %}> Εμφάνιση στις ενεργές επαφές</label>
-      <label class="full">Σημειώσεις<textarea class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="notes">{{ patient.notes or '' }}</textarea></label>
+    <div class="patient-profile-form">
+      <section class="patient-form-section"><h2>Προσωπικά στοιχεία</h2><div class="form-grid two-col compact-form-grid">
+        <label>Όνομα{{ autocomplete_autosave_input('patient-first-name', patient.first_name or '', 'first_name', 'patients', patient.patient_id, 'first_name') }}</label>
+        <label>Επώνυμο<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="last_name" value="{{ patient.last_name or '' }}"></label>
+        <label>Ημερομηνία γέννησης<input class="autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="birthdate" value="{{ patient.birthdate|grdate }}"></label>
+        <label>Φύλο<select class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="gender"><option value="">—</option><option value="Male" {% if patient.gender in ('Male','Κος') %}selected{% endif %}>Άνδρας</option><option value="Female" {% if patient.gender in ('Female','Κα','KA') %}selected{% endif %}>Γυναίκα</option></select></label>
+        <label>Αριθμός ταυτότητας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="identity_number" value="{{ patient.identity_number or '' }}"></label>
+        <label>Επάγγελμα{{ autocomplete_autosave_input('patient-profession', patient.profession_name or '', 'profession', 'patients', patient.patient_id, 'profession_id', 'profession_id', patient.profession_id or '', 'profession') }}</label>
+      </div></section>
+      <section class="patient-form-section"><h2>Επικοινωνία</h2><div class="form-grid two-col compact-form-grid">
+        <label>Κινητό<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="mobile_phone" value="{{ patient.mobile_phone or '' }}"></label>
+        <label>Τηλέφωνο οικίας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="home_phone" value="{{ patient.home_phone or '' }}"></label>
+        <label>Τηλέφωνο εργασίας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="work_phone" value="{{ patient.work_phone or '' }}"></label>
+        <label>Email<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="email" value="{{ patient.email or '' }}"></label>
+        <label>Διεύθυνση<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="address" value="{{ patient.address or '' }}"></label>
+        <label>Πόλη{{ autocomplete_autosave_input('patient-city', patient.city or '', 'city', 'patients', patient.patient_id, 'city') }}</label>
+        <label>Ταχυδρομικός κώδικας<input class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="postal_code" value="{{ patient.postal_code or '' }}"></label>
+      </div></section>
+      <section class="patient-form-section"><h2>Λοιπά στοιχεία / Κατάσταση</h2><div class="form-grid two-col compact-form-grid">
+        <label>Παραπομπή από{{ autocomplete_autosave_input('patient-referral', patient.referral_name or '', 'referral', 'patients', patient.patient_id, 'referral_id', 'referral_id', patient.referral_id or '') }}</label>
+        <label class="check-label status-check"><input type="checkbox" class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="is_active" value="1" {% if patient.is_active %}checked{% endif %}><span>Εμφάνιση στις ενεργές επαφές</span></label>
+      </div></section>
+      <section class="patient-form-section notes-section"><h2>Σημειώσεις</h2><div class="form-grid compact-form-grid"><label><textarea class="autosave" data-table="patients" data-pk="{{ patient.patient_id }}" data-column="notes">{{ patient.notes or '' }}</textarea></label></div></section>
     </div>
   </div>
   <aside class="panel histories-side">
-    <h2>Ιστορικά</h2>
-    <div class="history-list">{% for h in histories %}<a href="{{ url_for('history_detail', history_id=h.history_id) }}" class="history-card {% if h.is_active %}active{% endif %}"><strong>#{{ h.history_id }} · {{ h.history_date|grdate }}</strong><span>{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}</span><small>{{ 'Ενεργό' if h.is_active else 'Ανενεργό' }}{% if h.today %} · Ημερήσια{% endif %}</small></a>{% else %}<p class="muted">Δεν υπάρχουν ιστορικά.</p>{% endfor %}</div>
+    <div class="histories-heading"><h2>Ιστορικά</h2><span>{{ histories|length }}</span></div>
+    <div class="history-list">{% for h in histories %}<a href="{{ url_for('history_detail', history_id=h.history_id) }}" class="history-card {% if h.is_active %}active{% endif %}"><strong>{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}</strong><span>{{ h.history_date|grdate }} · #{{ h.history_id }}</span><small>{{ 'Ενεργό' if h.is_active else 'Ανενεργό' }}{% if h.today %} · Ημερήσια{% endif %}</small></a>{% else %}<p class="muted">Δεν υπάρχουν ιστορικά.</p>{% endfor %}</div>
   </aside>
 </section>
 {% endblock %}

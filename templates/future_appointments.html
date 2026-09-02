@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% block title %}Ραντεβού — ΦΥΣΙΟ{% endblock %}
+{% block content %}
+<section class="calendar-page" data-calendar data-config='{{ config|tojson }}' data-coverage-plans='{{ coverage_plans|tojson }}' data-gesy-referrals='{{ gesy_referrals|tojson }}' data-selected-patient="{{ selected_patient or '' }}" data-selected-history="{{ selected_history or '' }}">
+  <header class="panel calendar-toolbar">
+    <div class="calendar-title"><h1>Ραντεβού</h1><p>{{ 'Εβδομάδα από' if view == 'week' else 'Ημέρα' }} {{ start|grdate }}</p></div>
+    <nav class="calendar-actions" aria-label="Πλοήγηση ημερολογίου">
+      <a class="small-btn" aria-label="Προηγούμενη {{ 'εβδομάδα' if view == 'week' else 'ημέρα' }}" href="{{ url_for('future_appointments', view=view, date=previous.isoformat(), patient_id=selected_patient, history_id=selected_history) }}">←</a>
+      <a class="small-btn" href="{{ url_for('future_appointments', view=view, patient_id=selected_patient, history_id=selected_history) }}">Σήμερα</a>
+      <a class="small-btn" aria-label="Επόμενη {{ 'εβδομάδα' if view == 'week' else 'ημέρα' }}" href="{{ url_for('future_appointments', view=view, date=next_date.isoformat(), patient_id=selected_patient, history_id=selected_history) }}">→</a>
+      <a class="small-btn calendar-view-btn{% if view == 'week' %} active{% endif %}" href="{{ url_for('future_appointments', view='week', date=start.isoformat(), patient_id=selected_patient, history_id=selected_history) }}">Εβδομάδα</a>
+      <a class="small-btn calendar-view-btn{% if view == 'day' %} active{% endif %}" href="{{ url_for('future_appointments', view='day', date=start.isoformat(), patient_id=selected_patient, history_id=selected_history) }}">Ημέρα</a>
+    </nav>
+  </header>
+
+  <div class="calendar-layout">
+    <main class="calendar-main panel" data-scheduled='{{ scheduled|tojson }}'>
+      <div id="appointment-selection" class="appointment-selection" aria-live="polite">Επιλέξτε ενεργό ιστορικό από τη δεξιά λίστα.</div>
+      <div class="calendar-legend" aria-label="Υπόμνημα ημερολογίου"><span><i class="legend-scheduled"></i>Προγραμματισμένο</span><span><i class="legend-preview"></i>Προεπισκόπηση</span><span><i class="legend-cancelled"></i>Ακυρωμένο</span><span><i class="legend-break"></i>13:00–15:00</span></div>
+      <div class="calendar-scroll" tabindex="0" aria-label="Ημερολόγιο {{ 'εβδομάδας' if view == 'week' else 'ημέρας' }}">
+        <div class="calendar-grid calendar-days-{{ days|length }}">
+          <div class="calendar-corner">Ώρα</div>
+          {% for day in days %}<div class="calendar-day-head"><strong>{{ ['Δευ','Τρί','Τετ','Πέμ','Παρ','Σάβ','Κυρ'][day.weekday()] }}</strong><small>{{ day|grdate }}</small></div>{% endfor %}
+          {% set first_minutes=config.calendar_start[:2]|int*60 + config.calendar_start[3:]|int %}
+          {% set last_minutes=config.calendar_end[:2]|int*60 + config.calendar_end[3:]|int %}
+          {% set quiet_start=config.morning_end[:2]|int*60 + config.morning_end[3:]|int %}
+          {% set quiet_end=config.afternoon_start[:2]|int*60 + config.afternoon_start[3:]|int %}
+          {% for offset in range(0,last_minutes-first_minutes,config.step) %}
+            {% set total=first_minutes+offset %}
+            <div class="calendar-time">{{ '%02d:%02d'|format(total//60,total%60) }}</div>
+            {% for day in days %}<button type="button" class="calendar-slot{% if total >= quiet_start and total < quiet_end %} quiet-hours{% endif %}" data-date="{{ day.isoformat() }}" data-time="{{ '%02d:%02d'|format(total//60,total%60) }}" aria-label="Κενό slot {{ day|grdate }} {{ '%02d:%02d'|format(total//60,total%60) }}"></button>{% endfor %}
+          {% endfor %}
+          <div class="calendar-time calendar-end-time">{{ config.calendar_end }}</div>
+          {% for day in days %}<div class="calendar-end-cell" data-date="{{ day.isoformat() }}" data-time="{{ config.calendar_end }}"></div>{% endfor %}
+        </div>
+      </div>
+    </main>
+
+    <aside class="calendar-sidebar panel">
+      <form class="calendar-search"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="date" value="{{ start.isoformat() }}"><input name="q" value="{{ search }}" placeholder="Όνομα, τηλέφωνο ή ιστορικό" aria-label="Αναζήτηση ασθενή ή ιστορικού"><button class="small-btn">Αναζήτηση</button></form>
+      <h2>Πρόσφατοι</h2>
+      <div class="calendar-patient-list">{% for h in recents %}<button type="button" class="calendar-patient{% if h.history_id == selected_history %} selected{% endif %}" data-patient="{{ h.patient_id }}" data-history="{{ h.history_id }}" data-name="{{ h.last_name }} {{ h.first_name }}" data-history-label="{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}"><strong>{{ h.last_name }} {{ h.first_name }}</strong><span>{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}</span></button>{% else %}<p class="muted">Δεν υπάρχουν πρόσφατοι.</p>{% endfor %}</div>
+      <h2>Ενεργοί ασθενείς / ιστορικά</h2>
+      <div class="calendar-patient-list active-history-list">{% for h in active_histories %}<button type="button" class="calendar-patient{% if h.history_id == selected_history %} selected{% endif %}" data-patient="{{ h.patient_id }}" data-history="{{ h.history_id }}" data-name="{{ h.last_name }} {{ h.first_name }}" data-history-label="{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}"><strong>{{ h.last_name }} {{ h.first_name }}</strong><span>{{ h.main_diagnosis or 'Χωρίς περιγραφή' }}</span><small>{{ h.mobile_phone or '' }} · #{{ h.history_id }}</small></button>{% else %}<p class="muted">Δεν βρέθηκαν ενεργά ιστορικά.</p>{% endfor %}</div>
+    </aside>
+  </div>
+</section>
+
+<dialog id="future-appointment-dialog" class="future-appointment-dialog">
+  <button class="dialog-close" type="button" data-close-dialog aria-label="Κλείσιμο">×</button>
+  <h2 id="future-dialog-title">Νέο ραντεβού</h2>
+  <div class="future-appointment-person"><strong id="future-patient-name"></strong><span id="future-history-name"></span></div>
+  <div id="future-create-summary" class="future-create-summary"><div><span>Ημερομηνία</span><strong id="future-summary-date"></strong></div><div><span>Ώρα</span><strong id="future-summary-time"></strong></div></div>
+  <div class="future-form-grid">
+    <label id="future-date-label">Ημερομηνία<input id="future-date" type="text" inputmode="numeric" placeholder="DD/MM/YYYY" maxlength="10"></label>
+    <label id="future-time-label">Ώρα<input id="future-time" type="text" inputmode="numeric" placeholder="ΩΩ:ΛΛ" maxlength="5" pattern="[0-2][0-9]:[0-5][0-9]"></label>
+    <fieldset class="future-duration-field full"><legend>Διάρκεια</legend><input id="future-duration" type="hidden" value="{{ config.default_duration }}"><div class="future-duration-options">{% for d in config.durations %}<button type="button" class="duration-btn{% if d == config.default_duration %} active{% endif %}" data-duration="{{ d }}" aria-pressed="{{ 'true' if d == config.default_duration else 'false' }}">{{ d }}′</button>{% endfor %}</div></fieldset>
+    <label id="future-status-label">Κατάσταση<select id="future-status"><option value="scheduled">Προγραμματισμένο</option><option value="completed">Ολοκληρωμένο</option><option value="no_show">Δεν προσήλθε</option><option value="cancelled">Ακυρωμένο</option></select></label>
+    <label>Κάλυψη<select id="future-coverage"><option value="">— Επιλέξτε —</option>{% for p in coverage_plans %}<option value="{{ p.coverage_plan_id }}" data-type="{{ p.coverage_type }}">{{ p.name }}</option>{% endfor %}</select></label>
+    <label id="future-referral-label" hidden>Παραπεμπτικό<select id="future-referral"><option value="">— Επιλέξτε —</option></select></label>
+    <label id="future-copayment-label" hidden>Συμπληρωμή κατά την ολοκλήρωση<input id="future-copayment" type="number" min="0" step="0.01" value="0"></label>
+    <label class="full">Σημειώσεις <span class="muted">(προαιρετικό)</span><textarea id="future-notes"></textarea></label>
+  </div>
+  <p id="future-preview-warning" class="future-preview-warning" role="alert" hidden></p>
+  <div class="future-dialog-actions">
+    <a id="future-open-patient" class="small-btn" href="#">Καρτέλα ασθενούς</a>
+    <a id="future-open-history" class="small-btn" href="#">Ιστορικό</a>
+    <button id="cancel-future-appointment" class="danger-btn" type="button">Ακύρωση ραντεβού</button>
+    <button id="close-future-appointment" class="small-btn" type="button">Ακύρωση</button>
+    <button id="save-future-appointment" class="primary-btn" type="button">Αποθήκευση</button>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/future_appointments.js', v='20260905') }}"></script>{% endblock %}

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ΦΥΣΙΟ{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260830-record-counts') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='20260902-today-calendar-overflow') }}">
   <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body>
@@ -14,9 +14,10 @@
     <nav id="main-nav">
       <a href="{{ url_for('patients') }}">Ασθενείς</a>
       <a href="{{ url_for('active_histories') }}">Ιστορικά</a>
-      <a href="{{ url_for('activation') }}">Ενεργοποίηση</a>
       <a href="{{ url_for('current') }}">Ημερήσια</a>
       <a href="{{ url_for('today_appointments') }}">Σήμερα</a>
+      <a href="{{ url_for('future_appointments') }}">Ραντεβού</a>
+      <a href="{{ url_for('statistics') }}">Στατιστικά</a>
       <a href="{{ url_for('settings') }}">Ρυθμίσεις</a>
       <button id="undo-button" class="nav-action" type="button">Αναίρεση</button>
     </nav>
@@ -33,8 +34,17 @@
   <main class="page-shell">
     {% block content %}{% endblock %}
   </main>
+  {% if show_database_notice %}
+  <dialog id="database-startup-dialog" class="database-startup-dialog">
+    <h2>Βάση εργασίας</h2>
+    <p>Οι καταχωρήσεις θα γίνονται στη βάση:</p>
+    <strong>{{ database_name }}</strong>
+    <p class="path-value">{{ database_path }}</p>
+    <form method="dialog"><button class="primary-btn" value="ok">Εντάξει</button></form>
+  </dialog>
+  {% endif %}
   <div id="toast" class="toast" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='js/app.js', v='20260830-record-counts') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js', v='20260830-database-selection') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -4,7 +4,8 @@ import math
 import os
 import secrets
 import sqlite3
-from datetime import date, datetime
+import threading
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,19 @@ from flask import (
 from physio_core import (
     ALLOWED_COLUMNS,
     BASE_DIR,
+    ARCHIVE_DIR,
     DEFAULT_DB,
+    DEFAULT_BACKUP_DIR,
+    DEFAULT_DATABASE_SELECTION,
     PK_COLUMNS,
+    LOG_DIR,
+    STATIC_DIR,
+    TEMPLATE_DIR,
     ValidationError,
     backup_status,
+    choose_database_file,
     create_backup,
+    create_empty_schema_database,
     data_health,
     database_identity,
     db_conn,
@@ -35,15 +44,31 @@ from physio_core import (
     get_last_change,
     get_setting,
     init_meta_db,
+    load_database_selection,
     log_change,
     migrate_receipt_amount,
+    migrate_future_appointments,
+    migrate_session_coverage,
     normalize_search_text,
     normalize_value,
+    prepare_writable_layout,
+    save_database_selection,
     set_setting,
     undo_last_change,
+    validate_clinical_database,
     validate_default_amount,
     write_transaction,
 )
+from coverage_service import (
+    coverage_plans,
+    effective_charge_sql,
+    ensure_gesy_month,
+    financial_values_for_new_session,
+    parse_positive_int,
+    referral_rows,
+    validate_coverage,
+)
+from statistics_service import build_statistics
 
 
 PATIENT_FORM_COLUMNS = (
@@ -67,6 +92,53 @@ FIELD_LABELS = {
     "amount_due": "Χρέωση", "amount_paid": "Πληρωμή", "receipt_amount": "Απόδειξη",
     "notes": "Σημειώσεις",
 }
+
+
+def startup_database_path(selection_path: str | Path) -> Path:
+    explicit = os.environ.get("PHYSIO_DB_PATH")
+    if explicit:
+        try:
+            return validate_clinical_database(explicit)
+        except ValidationError as exc:
+            raise RuntimeError(f"Η βάση του PHYSIO_DB_PATH δεν είναι έγκυρη: {exc}") from exc
+
+    selection_error: ValidationError | None = None
+    try:
+        remembered = load_database_selection(selection_path)
+    except ValidationError as exc:
+        remembered = None
+        selection_error = exc
+    candidate = remembered or DEFAULT_DB
+    try:
+        verified = validate_clinical_database(candidate)
+    except ValidationError as exc:
+        selection_error = exc
+    else:
+        return verified
+
+    initial_directory = candidate.parent if candidate.parent.exists() else DEFAULT_DB.parent
+    try:
+        chosen = choose_database_file(initial_directory)
+    except Exception as exc:
+        detail = selection_error or exc
+        raise RuntimeError(
+            f"Δεν μπορεί να ανοίξει η εφαρμογή χωρίς έγκυρη βάση εργασίας: {detail}"
+        ) from exc
+    if chosen is None:
+        raise RuntimeError(
+            "Η εκκίνηση ακυρώθηκε επειδή δεν επιλέχθηκε έγκυρη βάση εργασίας"
+        )
+    verified = validate_clinical_database(chosen)
+    save_database_selection(selection_path, verified)
+    return verified
+
+
+def _show_database_notice(app: Flask) -> bool:
+    notice_token = app.config["STARTUP_NOTICE_TOKEN"]
+    if session.get("startup_notice_token") == notice_token:
+        return False
+    session["startup_notice_token"] = notice_token
+    return True
 
 LIST_BATCH_SIZE = 75
 
@@ -125,14 +197,29 @@ AUTOCOMPLETE_SOURCES = {
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
-    app = Flask(__name__)
-    db_path = Path(os.environ.get("PHYSIO_DB_PATH", str(DEFAULT_DB))).expanduser().resolve()
+    if not test_config:
+        prepare_writable_layout()
+    app = Flask(
+        __name__,
+        template_folder=str(TEMPLATE_DIR),
+        static_folder=str(STATIC_DIR),
+    )
+    selection_path = Path(
+        os.environ.get("PHYSIO_DATABASE_SELECTION", str(DEFAULT_DATABASE_SELECTION))
+    ).expanduser().resolve()
+    if test_config and test_config.get("DB_PATH"):
+        db_path = Path(test_config["DB_PATH"]).expanduser().resolve()
+    else:
+        db_path = startup_database_path(selection_path)
     meta_path = Path(os.environ.get("PHYSIO_META_PATH", str(default_meta_path(db_path)))).expanduser().resolve()
     backup_dir = Path(
-        os.environ.get("PHYSIO_BACKUP_DIR", str(BASE_DIR.parent / "physio_backups"))
+        os.environ.get("PHYSIO_BACKUP_DIR", str(DEFAULT_BACKUP_DIR))
     ).expanduser().resolve()
     app.config.update(
         DB_PATH=str(db_path), META_DB_PATH=str(meta_path), BACKUP_DIR=str(backup_dir),
+        ARCHIVE_DIR=str(ARCHIVE_DIR), LOG_DIR=str(LOG_DIR),
+        DATABASE_SELECTION_PATH=str(selection_path), DB_SWITCH_LOCK=threading.RLock(),
+        STARTUP_NOTICE_TOKEN=secrets.token_urlsafe(16),
         BACKUP_RETENTION=30, AUTO_BACKUP=True, SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict", MAX_CONTENT_LENGTH=1_000_000,
     )
@@ -141,11 +228,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.config["DB_PATH"] = str(Path(app.config["DB_PATH"]).resolve())
     app.config["META_DB_PATH"] = str(Path(app.config["META_DB_PATH"]).resolve())
     app.config["BACKUP_DIR"] = str(Path(app.config["BACKUP_DIR"]).resolve())
+    app.config["DATABASE_SELECTION_PATH"] = str(
+        Path(app.config["DATABASE_SELECTION_PATH"]).resolve()
+    )
     app.config["DB_IDENTITY"] = database_identity(app.config["DB_PATH"])
     init_meta_db(app.config["META_DB_PATH"])
     app.secret_key = get_setting(app, "secret_key", secrets.token_hex(32))
 
     migrate_receipt_amount(app)
+    migrate_future_appointments(app)
+    migrate_session_coverage(app)
 
     if app.config.get("AUTO_BACKUP"):
         try:
@@ -179,6 +271,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return f"{number:.2f}" if math.isfinite(number) else ""
         except (TypeError, ValueError):
             return ""
+
+    @app.template_filter("wholemoney")
+    def wholemoney(value: Any) -> str:
+        try:
+            number = float(str(value or 0).strip().replace(",", "."))
+            return str(int(math.floor(number + 0.5))) if math.isfinite(number) else "0"
+        except (TypeError, ValueError):
+            return "0"
 
     @app.before_request
     def csrf_protection():
@@ -240,6 +340,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "csrf_token": session.get("_csrf_token", ""),
             "sort_url": sort_url,
             "multi_sort_url": multi_sort_url,
+            "database_name": Path(app.config["DB_PATH"]).name,
+            "database_path": app.config["DB_PATH"],
+            "show_database_notice": _show_database_notice(app),
         }
 
     @app.route("/")
@@ -247,6 +350,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         today_iso = date.today().isoformat()
         with db_conn(app) as con:
             stats = {
+                "histories": con.execute(
+                    "SELECT COUNT(*) FROM clinical_histories"
+                ).fetchone()[0],
                 "active_histories": con.execute(
                     "SELECT COUNT(*) FROM clinical_histories WHERE is_active=1"
                 ).fetchone()[0],
@@ -277,8 +383,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "history_id": "h.history_id",
             "last_name": "PYCASEFOLD(p.last_name)",
             "first_name": "PYCASEFOLD(p.first_name)",
-            "social_security": "PYCASEFOLD(h.social_security)",
-            "gesy_referral": "PYCASEFOLD(h.gesy_referral)",
+            "coverage": "PYCASEFOLD(cp.name)",
+            "gesy_referral": "PYCASEFOLD(gr.referral_number)",
             "birthdate": "p.birthdate",
             "identity_number": "PYCASEFOLD(p.identity_number)",
             "mobile": "PYCASEFOLD(p.mobile_phone)",
@@ -287,25 +393,40 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         offset = batch_offset()
         rows, has_more = batched_query(
             app,
-            """SELECT p.patient_id, h.history_id, p.last_name, p.first_name,
-                      h.social_security, h.gesy_referral, p.birthdate,
-                      p.identity_number, p.mobile_phone""",
-            """FROM clinical_histories h
-               JOIN patients p ON p.patient_id=h.patient_id""",
-            ["EXISTS (SELECT 1 FROM appointments a WHERE a.history_id=h.history_id AND a.appointment_date=?)"],
+            f"""SELECT a.appointment_id, p.patient_id, h.history_id,
+                      p.last_name, p.first_name, p.birthdate,
+                      p.identity_number, p.mobile_phone,
+                      cp.name AS coverage_name, cp.coverage_type,
+                      gr.referral_number, gr.allowed_visits,
+                      (SELECT COUNT(*) FROM appointments used
+                       WHERE used.gesy_referral_id=a.gesy_referral_id
+                         AND used.status='completed') AS used_visits,
+                      pay.payment_id, pay.amount_due, pay.copayment,
+                      pay.amount_paid, pay.receipt_amount,
+                      {effective_charge_sql()} AS effective_charge""",
+            """FROM appointments a
+               JOIN clinical_histories h ON h.history_id=a.history_id
+               JOIN patients p ON p.patient_id=h.patient_id
+               LEFT JOIN CoveragePlans cp ON cp.coverage_plan_id=a.coverage_plan_id
+               LEFT JOIN GesyReferrals gr ON gr.gesy_referral_id=a.gesy_referral_id
+               LEFT JOIN payments pay ON pay.appointment_id=a.appointment_id
+               LEFT JOIN GesyMonth gm
+                 ON gm.year=CAST(strftime('%Y',a.appointment_date) AS INTEGER)
+                AND gm.month=CAST(strftime('%m',a.appointment_date) AS INTEGER)""",
+            ["a.appointment_date=?"],
             [selected_date],
             sort_map[sort_key], sort_dir, offset, LIST_BATCH_SIZE,
-            "p.patient_id, h.history_id",
+            "a.appointment_id",
         )
         if wants_list_batch():
             return list_batch_response("_today_rows.html", rows, offset, has_more)
         visible_count = query_count(
             app,
-            "FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id",
-            ["EXISTS (SELECT 1 FROM appointments a WHERE a.history_id=h.history_id AND a.appointment_date=?)"],
+            "FROM appointments a",
+            ["a.appointment_date=?"],
             [selected_date],
         )
-        total_count = query_count(app, "FROM clinical_histories", [], [])
+        total_count = query_count(app, "FROM appointments", [], [])
         return render_template(
             "today.html", rows=rows, selected_date=selected_date,
             has_more=has_more, next_offset=offset + len(rows),
@@ -320,11 +441,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "patient_id": "p.patient_id", "history_id": "h.history_id",
             "first_name": "PYCASEFOLD(p.first_name)", "last_name": "PYCASEFOLD(p.last_name)",
             "history_date": "h.history_date", "diagnosis": "PYCASEFOLD(h.main_diagnosis)",
-            "mobile": "p.mobile_phone", "patient_active": "p.is_active", "today": "h.today",
+            "mobile": "p.mobile_phone", "patient_active": "p.is_active",
+            "history_active": "h.is_active", "today": "h.today",
         }
         sort_key, sort_dir = validated_sort(sort_map, "last_name")
         offset = batch_offset()
-        where = ["h.is_active=1"]
+        where: list[str] = []
         params: list[Any] = []
         add_normalized_search(
             where, params, q,
@@ -627,7 +749,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 """SELECT doctor_id, first_name, last_name, specialty FROM doctors
                    ORDER BY PYCASEFOLD(last_name), PYCASEFOLD(first_name), doctor_id"""
             ).fetchall()
-        return render_template("history.html", history=history, doctors=doctors)
+            gesy_referrals = referral_rows(con, history_id)
+        return render_template(
+            "history.html", history=history, doctors=doctors,
+            gesy_referrals=gesy_referrals,
+        )
 
     @app.route("/current")
     def current():
@@ -664,7 +790,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         ]
         sort_map = {
             "number": "a.appointment_number", "date": "a.appointment_date",
-            "due": "pay.amount_due", "paid": "pay.amount_paid",
+            "due": "effective_charge", "paid": "pay.amount_paid",
             "receipt": "CAST(pay.receipt_amount AS REAL)", "notes": "PYCASEFOLD(a.notes)",
         }
         sort_key, sort_dir = validated_sort(sort_map, "number")
@@ -678,37 +804,58 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 ORDER BY PYCASEFOLD(p.last_name), PYCASEFOLD(p.first_name),
                          h.history_date DESC, p.patient_id, h.history_id
             """).fetchall()
-            if not current_rows:
-                return render_template(
-                    "current.html", current_rows=[], history=None, appointments=[],
-                    appointment_totals={"due": 0.0, "credit": 0.0, "receipts": 0.0},
-                    current_view=current_view, current_view_label=current_view_definition["label"],
-                    current_empty_message=current_view_definition["empty"], current_filters=current_filters,
-                    current_sort=sort_key, current_dir=sort_dir,
-                    visible_count=0, total_count=total_count,
-                )
-            valid_ids = {row["history_id"] for row in current_rows}
-            if not history_id or history_id not in valid_ids:
+            history = None
+            if history_id:
+                history = con.execute("""
+                    SELECT h.*, p.first_name, p.last_name, p.mobile_phone, p.birthdate,
+                           p.identity_number, p.is_active AS patient_active
+                    FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
+                    WHERE h.history_id=?
+                """, (history_id,)).fetchone()
+            if not history:
+                if not current_rows:
+                    return render_template(
+                        "current.html", current_rows=[], history=None, appointments=[],
+                        appointment_totals={"due": 0.0, "credit": 0.0, "receipts": 0.0},
+                        current_view=current_view, current_view_label=current_view_definition["label"],
+                        current_empty_message=current_view_definition["empty"], current_filters=current_filters,
+                        current_sort=sort_key, current_dir=sort_dir,
+                        visible_count=0, total_count=total_count,
+                    )
                 history_id = current_rows[0]["history_id"]
-            history = con.execute("""
-                SELECT h.*, p.first_name, p.last_name, p.mobile_phone, p.birthdate,
-                       p.identity_number, p.is_active AS patient_active
-                FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
-                WHERE h.history_id=?
-            """, (history_id,)).fetchone()
+                history = con.execute("""
+                    SELECT h.*, p.first_name, p.last_name, p.mobile_phone, p.birthdate,
+                           p.identity_number, p.is_active AS patient_active
+                    FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
+                    WHERE h.history_id=?
+                """, (history_id,)).fetchone()
             appointments = con.execute(f"""
                 SELECT a.appointment_id, a.appointment_number, a.appointment_date, a.appointment_time,
-                       a.notes, a.status, a.today,
-                       pay.payment_id, pay.amount_due, pay.amount_paid, pay.receipt_amount
+                       a.notes, a.status, a.today, a.coverage_plan_id, a.gesy_referral_id,
+                       pay.payment_id, pay.amount_due, pay.copayment,
+                       pay.amount_paid, pay.receipt_amount,
+                       cp.code AS coverage_code, cp.name AS coverage_name,
+                       cp.coverage_type, gr.referral_number, gr.allowed_visits,
+                       (SELECT COUNT(*) FROM appointments used
+                        WHERE used.gesy_referral_id=a.gesy_referral_id
+                          AND used.status='completed') AS used_visits,
+                       {effective_charge_sql()} AS effective_charge
                 FROM appointments a
                 LEFT JOIN payments pay ON pay.payment_id = (
                     SELECT p2.payment_id FROM payments p2
                     WHERE p2.appointment_id=a.appointment_id
                     ORDER BY p2.payment_id LIMIT 1
                 )
+                LEFT JOIN CoveragePlans cp ON cp.coverage_plan_id=a.coverage_plan_id
+                LEFT JOIN GesyReferrals gr ON gr.gesy_referral_id=a.gesy_referral_id
+                LEFT JOIN GesyMonth gm
+                  ON gm.year=CAST(strftime('%Y',a.appointment_date) AS INTEGER)
+                 AND gm.month=CAST(strftime('%m',a.appointment_date) AS INTEGER)
                 WHERE a.history_id=?
                 ORDER BY {sort_map[sort_key]} {sort_dir.upper()}, a.appointment_id
             """, (history_id,)).fetchall()
+            plans = coverage_plans(con)
+            gesy_referrals = referral_rows(con, history_id)
 
         def appointment_total(column: str) -> float:
             total = 0.0
@@ -723,7 +870,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return total
 
         appointment_totals = {
-            "due": appointment_total("amount_due"),
+            "due": appointment_total("effective_charge"),
             "credit": appointment_total("amount_paid"),
             "receipts": appointment_total("receipt_amount"),
         }
@@ -734,14 +881,227 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             current_empty_message=current_view_definition["empty"], current_filters=current_filters,
             current_sort=sort_key, current_dir=sort_dir,
             visible_count=len(appointments), total_count=total_count,
+            coverage_plans=plans, gesy_referrals=gesy_referrals,
         )
 
     @app.route("/settings")
     def settings():
+        with db_conn(app) as con:
+            plans = coverage_plans(con, active_only=False)
+            gesy_months = con.execute("""
+                SELECT gesy_month_id, year, month, rate
+                FROM GesyMonth ORDER BY year DESC, month DESC
+            """).fetchall()
         return render_template(
             "settings.html", health=data_health(app), backup=backup_status(app),
             database_path=app.config["DB_PATH"],
+            first_gesy_amount=get_setting(app, "first_gesy_amount", "10.00"),
+            first_other_amount=get_setting(app, "first_other_amount", "35.00"),
+            coverage_plans=plans, gesy_months=gesy_months,
+            appointment_settings={
+                "calendar_start": get_setting(app, "appointment_calendar_start", "08:00"),
+                "calendar_end": get_setting(app, "appointment_calendar_end", "20:00"),
+                "morning_end": get_setting(app, "appointment_morning_end", "13:00"),
+                "afternoon_start": get_setting(app, "appointment_afternoon_start", "15:00"),
+                "step": get_setting(app, "appointment_step", "15"),
+                "durations": get_setting(app, "appointment_durations", "30,45,60"),
+                "default_duration": get_setting(app, "appointment_default_duration", "60"),
+            },
         )
+
+    def appointment_config() -> dict[str, Any]:
+        raw_durations = get_setting(app, "appointment_durations", "30,45,60")
+        try:
+            durations = sorted({int(item) for item in raw_durations.split(",") if int(item) > 0})
+        except ValueError:
+            durations = [30, 45, 60]
+        return {
+            "calendar_start": get_setting(app, "appointment_calendar_start", "08:00"),
+            "calendar_end": get_setting(app, "appointment_calendar_end", "20:00"),
+            "morning_end": get_setting(app, "appointment_morning_end", "13:00"),
+            "afternoon_start": get_setting(app, "appointment_afternoon_start", "15:00"),
+            "step": int(get_setting(app, "appointment_step", "15")),
+            "durations": durations or [60],
+            "default_duration": int(get_setting(app, "appointment_default_duration", "60")),
+        }
+
+    def parse_calendar_date(raw: str | None) -> date:
+        if not raw:
+            return date.today()
+        for pattern in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(str(raw).strip(), pattern).date()
+            except ValueError:
+                continue
+        raise ValidationError("Η ημερομηνία ραντεβού δεν είναι έγκυρη")
+
+    def valid_clock(raw: Any) -> str:
+        try:
+            return datetime.strptime(str(raw), "%H:%M").strftime("%H:%M")
+        except ValueError as exc:
+            raise ValidationError("Η ώρα πρέπει να είναι σε μορφή ΩΩ:ΛΛ") from exc
+
+    def validate_appointment_slot(
+        raw_date: Any, raw_time: Any, raw_duration: Any, config: dict[str, Any],
+    ) -> tuple[str, str, int, datetime]:
+        appointment_date = parse_calendar_date(raw_date).isoformat()
+        start_time = valid_clock(raw_time)
+        duration = int(raw_duration)
+        if duration not in config["durations"]:
+            raise ValidationError("Η διάρκεια δεν επιτρέπεται από τις ρυθμίσεις")
+        start_dt = datetime.fromisoformat(f"{appointment_date}T{start_time}")
+        end_dt = start_dt + timedelta(minutes=duration)
+        start_minutes = start_dt.hour * 60 + start_dt.minute
+        calendar_start = datetime.strptime(config["calendar_start"], "%H:%M")
+        calendar_start_minutes = calendar_start.hour * 60 + calendar_start.minute
+        if (start_minutes - calendar_start_minutes) % config["step"]:
+            raise ValidationError(
+                f"Η ώρα έναρξης πρέπει να ακολουθεί βήμα {config['step']} λεπτών"
+            )
+        if (
+            start_time < config["calendar_start"]
+            or end_dt.strftime("%H:%M") > config["calendar_end"]
+            or end_dt.date().isoformat() != appointment_date
+        ):
+            raise ValidationError("Το ραντεβού πρέπει να είναι εντός του ωραρίου ημερολογίου")
+        return appointment_date, start_time, duration, end_dt
+
+    def same_day_warning(rows: list[sqlite3.Row], action: str) -> str:
+        ranges = ", ".join(
+            f"{row['start_time']}–"
+            f"{(datetime.strptime(row['start_time'], '%H:%M') + timedelta(minutes=row['duration_minutes'])).strftime('%H:%M')}"
+            for row in rows
+        )
+        return f"Ο ασθενής έχει ήδη ραντεβού την ίδια ημέρα στις {ranges}. {action}"
+
+    @app.route("/future-appointments")
+    def future_appointments():
+        selected_date = parse_calendar_date(request.args.get("date"))
+        view = request.args.get("view") or session.get("future_appointments_view", "week")
+        if view not in {"week", "day"}: view = "week"
+        session["future_appointments_view"] = view
+        start = selected_date if view == "day" else selected_date - timedelta(days=selected_date.weekday())
+        visible_days = 1 if view == "day" else 6
+        end = start + timedelta(days=visible_days)
+        selected_history = request.args.get("history_id", type=int)
+        selected_patient = request.args.get("patient_id", type=int)
+        search = (request.args.get("q") or "").strip()
+        config = appointment_config()
+        with db_conn(app) as con:
+            where, params = ["h.is_active=1 AND p.is_active=1"], []
+            if search:
+                pattern = f"%{normalize_search_text(search)}%"
+                where.append("(PYCASEFOLD(p.first_name) LIKE ? OR PYCASEFOLD(p.last_name) LIKE ? OR PYCASEFOLD(p.mobile_phone) LIKE ? OR PYCASEFOLD(h.main_diagnosis) LIKE ? OR PYCASEFOLD(h.problem_description) LIKE ?)")
+                params.extend([pattern] * 5)
+            active_histories = con.execute("""
+                SELECT h.history_id,h.patient_id,h.main_diagnosis,p.first_name,p.last_name,p.mobile_phone
+                FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id
+                WHERE """ + " AND ".join(where) + " ORDER BY PYCASEFOLD(p.last_name),PYCASEFOLD(p.first_name),h.history_id", params).fetchall()
+            recents = con.execute("""
+                SELECT h.history_id,h.patient_id,h.main_diagnosis,p.first_name,p.last_name,MAX(a.appointment_date) AS last_visit
+                FROM appointments a JOIN clinical_histories h ON h.history_id=a.history_id JOIN patients p ON p.patient_id=h.patient_id
+                WHERE h.is_active=1 AND p.is_active=1 GROUP BY h.history_id ORDER BY last_visit DESC,a.appointment_id DESC LIMIT 8
+            """).fetchall()
+            scheduled = con.execute("""
+                SELECT f.*,p.first_name,p.last_name,h.main_diagnosis FROM Future_appointments f
+                JOIN patients p ON p.patient_id=f.patient_id JOIN clinical_histories h ON h.history_id=f.history_id
+                WHERE f.appointment_date>=? AND f.appointment_date<? ORDER BY f.appointment_date,f.start_time,f.future_appointment_id
+            """, (start.isoformat(), end.isoformat())).fetchall()
+            plans = [dict(row) for row in coverage_plans(con)]
+            referrals = [dict(row) for row in con.execute("""
+                SELECT r.gesy_referral_id,r.history_id,r.referral_number,r.allowed_visits,
+                       COUNT(CASE WHEN a.status='completed' THEN 1 END) AS used_visits
+                FROM GesyReferrals r
+                LEFT JOIN appointments a ON a.gesy_referral_id=r.gesy_referral_id
+                GROUP BY r.gesy_referral_id ORDER BY r.gesy_referral_id DESC
+            """).fetchall()]
+        delta = 7 if view == "week" else 1
+        return render_template("future_appointments.html", config=config, view=view, start=start, previous=start-timedelta(days=delta), next_date=start+timedelta(days=delta), days=[start + timedelta(days=i) for i in range(visible_days)], scheduled=[dict(row) for row in scheduled], active_histories=active_histories, recents=recents, selected_history=selected_history, selected_patient=selected_patient, search=search, coverage_plans=plans, gesy_referrals=referrals)
+
+    @app.post("/api/database/create-empty")
+    def api_create_empty_database():
+        current_path = Path(app.config["DB_PATH"])
+        try:
+            destination = choose_database_file(
+                current_path.parent, create_new=True,
+            )
+            if destination is None:
+                return jsonify(ok=True, cancelled=True)
+            created = create_empty_schema_database(current_path, destination)
+            return jsonify(
+                ok=True, cancelled=False, filename=created.name, path=str(created),
+            )
+        except ValidationError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        except Exception as exc:
+            app.logger.exception("Αποτυχία δημιουργίας κενής βάσης")
+            return jsonify(ok=False, error=str(exc)), 400
+
+    @app.post("/api/database/select")
+    def api_select_database():
+        current_path = Path(app.config["DB_PATH"])
+        try:
+            selected = choose_database_file(current_path.parent)
+            if selected is None:
+                return jsonify(ok=True, cancelled=True)
+            selected = validate_clinical_database(selected)
+        except ValidationError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        except Exception as exc:
+            app.logger.exception("Αποτυχία επιλογής βάσης εργασίας")
+            return jsonify(ok=False, error=str(exc)), 400
+
+        previous = {
+            key: app.config[key]
+            for key in ("DB_PATH", "META_DB_PATH", "DB_IDENTITY")
+        }
+        selected_meta = default_meta_path(selected)
+        with app.config["DB_SWITCH_LOCK"]:
+            try:
+                init_meta_db(selected_meta)
+                app.config.update(
+                    DB_PATH=str(selected),
+                    META_DB_PATH=str(selected_meta),
+                    DB_IDENTITY=database_identity(selected),
+                )
+                migrate_receipt_amount(app)
+                migrate_future_appointments(app)
+                migrate_session_coverage(app)
+                if app.config.get("AUTO_BACKUP"):
+                    create_backup(app)
+                save_database_selection(
+                    app.config["DATABASE_SELECTION_PATH"], selected,
+                )
+            except Exception as exc:
+                app.config.update(previous)
+                app.logger.exception("Αποτυχία αλλαγής βάσης εργασίας")
+                return jsonify(
+                    ok=False,
+                    error=f"Η βάση δεν άλλαξε. Η προηγούμενη επιλογή παραμένει ενεργή: {exc}",
+                ), 500
+
+        session.pop("startup_notice_token", None)
+        return jsonify(
+            ok=True, cancelled=False, filename=selected.name, path=str(selected),
+        )
+
+    @app.route("/statistics")
+    def statistics():
+        statistics_args: Any = request.args
+        if not statistics_args:
+            today = date.today()
+            month_start = today.replace(day=1)
+            next_month = (month_start + timedelta(days=32)).replace(day=1)
+            statistics_args = {
+                "from": month_start.isoformat(),
+                "to": (next_month - timedelta(days=1)).isoformat(),
+            }
+        try:
+            with db_conn(app) as con:
+                stats = build_statistics(con, statistics_args)
+        except ValueError as exc:
+            return render_template("statistics.html", stats=None, error=str(exc)), 400
+        return render_template("statistics.html", stats=stats, error=None)
 
     @app.get("/api/autocomplete")
     def api_autocomplete():
@@ -789,12 +1149,332 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/api/settings")
     def api_settings():
         payload = json_payload()
+        setting_fields = {
+            "default_amount_due": "default_amount_due",
+            "first_gesy_amount": "first_gesy_amount",
+            "first_other_amount": "first_other_amount",
+        }
+        if "appointment_settings" in payload:
+            supplied = payload["appointment_settings"]
+            try:
+                values = {
+                    "appointment_calendar_start": valid_clock(supplied["calendar_start"]),
+                    "appointment_calendar_end": valid_clock(supplied["calendar_end"]),
+                    "appointment_morning_end": valid_clock(supplied["morning_end"]),
+                    "appointment_afternoon_start": valid_clock(supplied["afternoon_start"]),
+                }
+                step = int(supplied["step"]); durations = sorted({int(value) for value in supplied["durations"]})
+                default = int(supplied["default_duration"])
+                if step != 15 or not durations or any(value not in {30, 45, 60} for value in durations) or default not in durations:
+                    raise ValidationError("Ελέγξτε το βήμα, τις ενεργές διάρκειες και την προεπιλεγμένη διάρκεια")
+                if not (values["appointment_calendar_start"] < values["appointment_morning_end"] <= values["appointment_afternoon_start"] < values["appointment_calendar_end"]):
+                    raise ValidationError("Η έναρξη του ημερολογίου πρέπει να προηγείται του τέλους")
+            except (KeyError, TypeError, ValueError) as exc:
+                return jsonify(ok=False, error="Οι ρυθμίσεις ραντεβού δεν είναι έγκυρες"), 400
+            values.update({"appointment_step": str(step), "appointment_durations": ",".join(map(str, durations)), "appointment_default_duration": str(default)})
+            for key, value in values.items(): set_setting(app, key, value)
+            return jsonify(ok=True, values=values)
         try:
-            value = validate_default_amount(payload.get("default_amount_due"))
+            updates = {
+                setting_key: validate_default_amount(payload[field])
+                for field, setting_key in setting_fields.items()
+                if field in payload
+            }
         except ValidationError as exc:
             return jsonify(ok=False, error=str(exc)), 400
-        set_setting(app, "default_amount_due", value)
-        return jsonify(ok=True, value=value)
+        if not updates:
+            return jsonify(ok=False, error="Δεν δόθηκε ρύθμιση"), 400
+        for setting_key, value in updates.items():
+            set_setting(app, setting_key, value)
+        return jsonify(ok=True, value=updates.get("default_amount_due"), values=updates)
+
+    @app.post("/api/coverage-plans")
+    def api_create_coverage_plan():
+        payload = json_payload()
+        code = str(payload.get("code") or "").strip().upper()
+        coverage_type = str(payload.get("coverage_type") or "").strip().upper()
+        name = str(payload.get("name") or "").strip()
+        if (
+            not code or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in code)
+            or coverage_type not in {"SELF_PAY", "PRIVATE_INSURANCE"}
+            or not name
+        ):
+            return jsonify(ok=False, error="Ελέγξτε τον κωδικό, τον τύπο και το όνομα"), 400
+        try:
+            default_charge = float(validate_default_amount(payload.get("default_charge")))
+        except ValidationError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        try:
+            with write_transaction(app) as con:
+                cur = con.execute("""
+                    INSERT INTO CoveragePlans(
+                        code, coverage_type, name, default_charge, active
+                    ) VALUES(?,?,?,?,1)
+                """, (code, coverage_type, name, default_charge))
+        except sqlite3.IntegrityError:
+            return jsonify(ok=False, error="Υπάρχει ήδη πλάνο με αυτόν τον κωδικό"), 409
+        return jsonify(ok=True, coverage_plan_id=cur.lastrowid)
+
+    @app.post("/api/coverage-plans/<int:coverage_plan_id>")
+    def api_update_coverage_plan(coverage_plan_id: int):
+        payload = json_payload()
+        name = str(payload.get("name") or "").strip()
+        active = 1 if payload.get("active") in (True, 1, "1", "true", "on") else 0
+        if not name:
+            return jsonify(ok=False, error="Το όνομα είναι υποχρεωτικό"), 400
+        with write_transaction(app) as con:
+            plan = con.execute(
+                "SELECT coverage_type FROM CoveragePlans WHERE coverage_plan_id=?",
+                (coverage_plan_id,),
+            ).fetchone()
+            if not plan:
+                return jsonify(ok=False, error="Το πλάνο δεν βρέθηκε"), 404
+            if plan["coverage_type"] == "GESY":
+                default_charge = None
+                active = 1
+            else:
+                try:
+                    default_charge = float(validate_default_amount(payload.get("default_charge")))
+                except ValidationError as exc:
+                    return jsonify(ok=False, error=str(exc)), 400
+            con.execute("""
+                UPDATE CoveragePlans
+                SET name=?, default_charge=?, active=?, updated_at=CURRENT_TIMESTAMP
+                WHERE coverage_plan_id=?
+            """, (name, default_charge, active, coverage_plan_id))
+        return jsonify(ok=True)
+
+    @app.post("/api/gesy-months")
+    def api_upsert_gesy_month():
+        payload = json_payload()
+        try:
+            year = int(payload.get("year"))
+            month = int(payload.get("month"))
+            rate = float(validate_default_amount(payload.get("rate")))
+            if year < 1900 or year > 2200 or month < 1 or month > 12:
+                raise ValidationError("Ο μήνας ή το έτος δεν είναι έγκυρο")
+        except (TypeError, ValueError, ValidationError) as exc:
+            return jsonify(ok=False, error=str(exc) or "Μη έγκυρη τιμή μήνα"), 400
+        with write_transaction(app) as con:
+            con.execute("""
+                INSERT INTO GesyMonth(year,month,rate) VALUES(?,?,?)
+                ON CONFLICT(year,month) DO UPDATE SET
+                    rate=excluded.rate, updated_at=CURRENT_TIMESTAMP
+            """, (year, month, rate))
+        return jsonify(ok=True, year=year, month=month, rate=rate)
+
+    @app.post("/api/histories/<int:history_id>/gesy-referrals")
+    def api_create_gesy_referral(history_id: int):
+        payload = json_payload()
+        referral_number = str(payload.get("referral_number") or "").strip() or None
+        notes = str(payload.get("notes") or "").strip() or None
+        if not referral_number:
+            return jsonify(ok=False, error="Ο αριθμός παραπεμπτικού είναι υποχρεωτικός"), 400
+        try:
+            allowed_visits = parse_positive_int(
+                payload.get("allowed_visits"), "Επιτρεπόμενες επισκέψεις",
+            )
+        except ValidationError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        with write_transaction(app) as con:
+            if not con.execute(
+                "SELECT 1 FROM clinical_histories WHERE history_id=?", (history_id,),
+            ).fetchone():
+                return jsonify(ok=False, error="Το ιστορικό δεν βρέθηκε"), 404
+            cur = con.execute("""
+                INSERT INTO GesyReferrals(
+                    history_id, referral_number, allowed_visits, notes
+                ) VALUES(?,?,?,?)
+            """, (history_id, referral_number, allowed_visits, notes))
+        return jsonify(ok=True, gesy_referral_id=cur.lastrowid)
+
+    @app.post("/api/future-appointments")
+    def api_future_appointments():
+        payload = json_payload()
+        config = appointment_config()
+        try:
+            patient_id = int(payload.get("patient_id"))
+            history_id = int(payload.get("history_id"))
+            appointment_date, start_time, duration, end_dt = validate_appointment_slot(
+                payload.get("appointment_date"), payload.get("start_time"),
+                payload.get("duration_minutes"), config,
+            )
+            notes = str(payload.get("notes") or "").strip() or None
+        except (TypeError, ValueError, ValidationError) as exc:
+            return jsonify(ok=False, error=str(exc) or "Μη έγκυρα στοιχεία ραντεβού"), 400
+        with write_transaction(app) as con:
+            valid = con.execute(
+                "SELECT 1 FROM clinical_histories h JOIN patients p ON p.patient_id=h.patient_id "
+                "WHERE h.history_id=? AND h.patient_id=?",
+                (history_id, patient_id),
+            ).fetchone()
+            if not valid:
+                return jsonify(ok=False, error="Το ιστορικό δεν ανήκει στον επιλεγμένο ασθενή"), 400
+            try:
+                plan, referral, unused = validate_coverage(
+                    con, history_id, payload.get("coverage_plan_id"),
+                    payload.get("gesy_referral_id"), completing=False,
+                )
+            except ValidationError as exc:
+                return jsonify(ok=False, error=str(exc)), 400
+            overlap = con.execute("""
+                SELECT 1 FROM Future_appointments
+                WHERE appointment_date=? AND status IN ('scheduled','completed')
+                  AND time(start_time) < time(?)
+                  AND time(start_time, '+' || duration_minutes || ' minutes') > time(?)
+                LIMIT 1
+            """, (appointment_date, end_dt.strftime("%H:%M"), start_time)).fetchone()
+            if overlap:
+                return jsonify(
+                    ok=False,
+                    error="Δεν υπάρχει διαθέσιμο συνεχόμενο διάστημα σε αυτή την ώρα",
+                ), 409
+            existing = con.execute("""
+                SELECT start_time,duration_minutes FROM Future_appointments
+                WHERE patient_id=? AND appointment_date=? AND status='scheduled'
+                ORDER BY start_time
+            """, (patient_id, appointment_date)).fetchall()
+            if existing and not payload.get("confirm_second"):
+                return jsonify(
+                    ok=False,
+                    requires_confirmation=True,
+                    message=same_day_warning(
+                        existing, "Θέλετε να καταχωρηθεί δεύτερο ραντεβού;",
+                    ),
+                ), 409
+            cur = con.execute("""
+                INSERT INTO Future_appointments(
+                    patient_id,history_id,appointment_date,start_time,
+                    duration_minutes,status,notes,coverage_plan_id,gesy_referral_id
+                ) VALUES(?,?,?,?,?,'scheduled',?,?,?)
+            """, (
+                patient_id, history_id, appointment_date, start_time, duration, notes,
+                plan["coverage_plan_id"],
+                referral["gesy_referral_id"] if referral else None,
+            ))
+        return jsonify(ok=True, future_appointment_id=cur.lastrowid)
+
+    @app.post("/api/future-appointments/<int:future_appointment_id>/cancel")
+    def api_cancel_future_appointment(future_appointment_id: int):
+        with write_transaction(app) as con:
+            exists = con.execute(
+                "SELECT 1 FROM Future_appointments WHERE future_appointment_id=?",
+                (future_appointment_id,),
+            ).fetchone()
+            if not exists:
+                return jsonify(ok=False, error="Το ραντεβού δεν βρέθηκε"), 404
+            changed = con.execute(
+                "UPDATE Future_appointments SET status='cancelled',"
+                "updated_at=CURRENT_TIMESTAMP "
+                "WHERE future_appointment_id=? AND status!='cancelled'",
+                (future_appointment_id,),
+            ).rowcount
+        return jsonify(ok=True, changed=changed)
+
+    @app.post("/api/future-appointments/<int:future_appointment_id>")
+    def api_update_future_appointment(future_appointment_id: int):
+        payload = json_payload()
+        config = appointment_config()
+        try:
+            appointment_date, start_time, duration, end_dt = validate_appointment_slot(
+                payload.get("appointment_date"), payload.get("start_time"),
+                payload.get("duration_minutes"), config,
+            )
+            status = str(payload.get("status") or "scheduled")
+            if status not in {"scheduled", "completed", "cancelled", "no_show"}:
+                raise ValidationError("Η κατάσταση δεν είναι έγκυρη")
+        except (TypeError, ValueError, ValidationError) as exc:
+            return jsonify(ok=False, error=str(exc) or "Μη έγκυρα στοιχεία ραντεβού"), 400
+        with write_transaction(app) as con:
+            current = con.execute("SELECT * FROM Future_appointments WHERE future_appointment_id=?", (future_appointment_id,)).fetchone()
+            if not current:
+                return jsonify(ok=False, error="Το ραντεβού δεν βρέθηκε"), 404
+            overlap = con.execute("""
+                SELECT 1 FROM Future_appointments
+                WHERE future_appointment_id<>? AND appointment_date=?
+                  AND status IN ('scheduled','completed')
+                  AND time(start_time) < time(?)
+                  AND time(start_time, '+' || duration_minutes || ' minutes') > time(?)
+                LIMIT 1
+            """, (future_appointment_id, appointment_date, end_dt.strftime("%H:%M"), start_time)).fetchone()
+            if status in {"scheduled", "completed"} and overlap:
+                return jsonify(ok=False, error="Δεν υπάρχει διαθέσιμο συνεχόμενο διάστημα σε αυτή την ώρα"), 409
+            existing = con.execute("""
+                SELECT start_time,duration_minutes FROM Future_appointments
+                WHERE future_appointment_id<>? AND patient_id=?
+                  AND appointment_date=? AND status='scheduled'
+                ORDER BY start_time
+            """, (future_appointment_id, current["patient_id"], appointment_date)).fetchall()
+            if status == "scheduled" and existing and not payload.get("confirm_second"):
+                return jsonify(
+                    ok=False,
+                    requires_confirmation=True,
+                    message=same_day_warning(
+                        existing, "Θέλετε να αποθηκευτεί η αλλαγή;",
+                    ),
+                ), 409
+            plan_id = payload.get("coverage_plan_id", current["coverage_plan_id"])
+            referral_id = payload.get("gesy_referral_id", current["gesy_referral_id"])
+            try:
+                plan, referral, used_visits = validate_coverage(
+                    con, current["history_id"], plan_id, referral_id,
+                    completing=(status == "completed" and not current["completed_appointment_id"]),
+                )
+            except ValidationError as exc:
+                return jsonify(ok=False, error=str(exc)), 400
+
+            completed_appointment_id = current["completed_appointment_id"]
+            exhausted = False
+            if status == "completed" and not completed_appointment_id:
+                try:
+                    amount_due, copayment, effective_charge = financial_values_for_new_session(
+                        con, plan, appointment_date, payload.get("copayment"),
+                    )
+                except ValidationError as exc:
+                    return jsonify(ok=False, error=str(exc)), 400
+                next_no = con.execute(
+                    "SELECT COALESCE(MAX(appointment_number),0)+1 FROM appointments WHERE history_id=?",
+                    (current["history_id"],),
+                ).fetchone()[0]
+                completed = con.execute("""
+                    INSERT INTO appointments(
+                        history_id,appointment_number,appointment_date,appointment_time,
+                        status,today,coverage_plan_id,gesy_referral_id,notes
+                    ) VALUES(?,?,?,?, 'completed',0,?,?,?)
+                """, (
+                    current["history_id"], next_no, appointment_date, start_time,
+                    plan["coverage_plan_id"],
+                    referral["gesy_referral_id"] if referral else None,
+                    str(payload.get("notes") or "").strip() or None,
+                ))
+                completed_appointment_id = completed.lastrowid
+                con.execute("""
+                    INSERT INTO payments(
+                        appointment_id,payment_date,amount_due,copayment,
+                        amount_paid,receipt_amount
+                    ) VALUES(?,?,?,?,0,0)
+                """, (completed_appointment_id, appointment_date, amount_due, copayment))
+                exhausted = bool(
+                    referral and referral["allowed_visits"] is not None
+                    and used_visits + 1 == referral["allowed_visits"]
+                )
+            con.execute("""
+                UPDATE Future_appointments SET
+                    appointment_date=?,start_time=?,duration_minutes=?,status=?,notes=?,
+                    coverage_plan_id=?,gesy_referral_id=?,completed_appointment_id=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE future_appointment_id=?
+            """, (
+                appointment_date, start_time, duration, status,
+                str(payload.get("notes") or "").strip() or None,
+                plan["coverage_plan_id"],
+                referral["gesy_referral_id"] if referral else None,
+                completed_appointment_id, future_appointment_id,
+            ))
+        return jsonify(
+            ok=True, completed_appointment_id=completed_appointment_id,
+            referral_exhausted=exhausted,
+        )
 
     @app.post("/api/patients/<int:patient_id>/delete")
     def api_delete_patient(patient_id: int):
@@ -836,11 +1516,22 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     JOIN clinical_histories h ON h.history_id=a.history_id
                     WHERE h.patient_id=? ORDER BY pay.payment_id
                 """, (patient_id,)).fetchall()
+                future_appointments = con.execute("""
+                    SELECT * FROM Future_appointments
+                    WHERE patient_id=? ORDER BY future_appointment_id
+                """, (patient_id,)).fetchall()
+                gesy_referrals = con.execute("""
+                    SELECT r.* FROM GesyReferrals r
+                    JOIN clinical_histories h ON h.history_id=r.history_id
+                    WHERE h.patient_id=? ORDER BY r.gesy_referral_id
+                """, (patient_id,)).fetchall()
 
                 snapshot = {
                     "patients": [dict(patient)],
                     "clinical_histories": [dict(row) for row in histories],
+                    "GesyReferrals": [dict(row) for row in gesy_referrals],
                     "appointments": [dict(row) for row in appointments],
+                    "Future_appointments": [dict(row) for row in future_appointments],
                     "payments": [dict(row) for row in payments],
                 }
                 log_change(
@@ -855,8 +1546,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                         WHERE h.patient_id=?
                     )
                 """, (patient_id,)).rowcount
+                deleted_future_appointments = con.execute(
+                    "DELETE FROM Future_appointments WHERE patient_id=?", (patient_id,)
+                ).rowcount
                 deleted_appointments = con.execute("""
                     DELETE FROM appointments WHERE history_id IN (
+                        SELECT history_id FROM clinical_histories WHERE patient_id=?
+                    )
+                """, (patient_id,)).rowcount
+                deleted_gesy_referrals = con.execute("""
+                    DELETE FROM GesyReferrals WHERE history_id IN (
                         SELECT history_id FROM clinical_histories WHERE patient_id=?
                     )
                 """, (patient_id,)).rowcount
@@ -874,11 +1573,98 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 patient_id=patient_id,
                 histories=deleted_histories,
                 appointments=deleted_appointments,
+                future_appointments=deleted_future_appointments,
+                gesy_referrals=deleted_gesy_referrals,
                 payments=deleted_payments,
                 backup=backup_path.name,
             )
         except sqlite3.Error:
             app.logger.exception("Αποτυχία διαγραφής ασθενή #%s", patient_id)
+            return jsonify(
+                ok=False,
+                error="Η διαγραφή ακυρώθηκε και δεν άλλαξε κανένα δεδομένο",
+            ), 500
+
+    @app.post("/api/histories/<int:history_id>/delete")
+    def api_delete_history(history_id: int):
+        with db_conn(app) as con:
+            if not con.execute(
+                "SELECT 1 FROM clinical_histories WHERE history_id=?", (history_id,)
+            ).fetchone():
+                return jsonify(ok=False, error="Το ιστορικό δεν βρέθηκε"), 404
+
+        try:
+            backup_path = create_backup(app, force=True)
+        except Exception:
+            app.logger.exception("Αποτυχία backup πριν από διαγραφή ιστορικού")
+            return jsonify(
+                ok=False,
+                error="Η διαγραφή ακυρώθηκε επειδή δεν δημιουργήθηκε backup",
+            ), 500
+
+        try:
+            with write_transaction(app) as con:
+                history = con.execute(
+                    "SELECT * FROM clinical_histories WHERE history_id=?", (history_id,)
+                ).fetchone()
+                if not history:
+                    return jsonify(ok=False, error="Το ιστορικό δεν βρέθηκε"), 404
+                appointments = con.execute(
+                    "SELECT * FROM appointments WHERE history_id=? ORDER BY appointment_id", (history_id,)
+                ).fetchall()
+                payments = con.execute("""
+                    SELECT pay.* FROM payments pay
+                    JOIN appointments a ON a.appointment_id=pay.appointment_id
+                    WHERE a.history_id=? ORDER BY pay.payment_id
+                """, (history_id,)).fetchall()
+                future_appointments = con.execute(
+                    "SELECT * FROM Future_appointments WHERE history_id=? "
+                    "ORDER BY future_appointment_id", (history_id,),
+                ).fetchall()
+                gesy_referrals = con.execute(
+                    "SELECT * FROM GesyReferrals WHERE history_id=? "
+                    "ORDER BY gesy_referral_id", (history_id,),
+                ).fetchall()
+                snapshot = {
+                    "clinical_histories": [dict(history)],
+                    "GesyReferrals": [dict(row) for row in gesy_referrals],
+                    "appointments": [dict(row) for row in appointments],
+                    "Future_appointments": [dict(row) for row in future_appointments],
+                    "payments": [dict(row) for row in payments],
+                }
+                log_change(
+                    con, app, "delete_history", "clinical_histories", "history_id", history_id,
+                    None, None, snapshot, f"Διαγραφή ιστορικού #{history_id}",
+                )
+                deleted_payments = con.execute("""
+                    DELETE FROM payments WHERE appointment_id IN (
+                        SELECT appointment_id FROM appointments WHERE history_id=?
+                    )
+                """, (history_id,)).rowcount
+                deleted_future_appointments = con.execute(
+                    "DELETE FROM Future_appointments WHERE history_id=?", (history_id,)
+                ).rowcount
+                deleted_appointments = con.execute(
+                    "DELETE FROM appointments WHERE history_id=?", (history_id,)
+                ).rowcount
+                deleted_gesy_referrals = con.execute(
+                    "DELETE FROM GesyReferrals WHERE history_id=?", (history_id,)
+                ).rowcount
+                deleted_history = con.execute(
+                    "DELETE FROM clinical_histories WHERE history_id=?", (history_id,)
+                ).rowcount
+                if deleted_history != 1:
+                    raise sqlite3.IntegrityError("Το ιστορικό δεν διαγράφηκε")
+            return jsonify(
+                ok=True, history_id=history_id, patient_id=history["patient_id"],
+                appointments=deleted_appointments,
+                future_appointments=deleted_future_appointments,
+                gesy_referrals=deleted_gesy_referrals,
+                payments=deleted_payments,
+                backup=backup_path.name,
+            )
+        except sqlite3.Error:
+            app.logger.exception("Αποτυχία διαγραφής ιστορικού #%s", history_id)
             return jsonify(
                 ok=False,
                 error="Η διαγραφή ακυρώθηκε και δεν άλλαξε κανένα δεδομένο",
@@ -921,9 +1707,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "SELECT * FROM payments WHERE appointment_id=? ORDER BY payment_id",
                     (appointment_id,),
                 ).fetchall()
+                future_appointment_links = [
+                    row[0] for row in con.execute(
+                        "SELECT future_appointment_id FROM Future_appointments "
+                        "WHERE completed_appointment_id=? ORDER BY future_appointment_id",
+                        (appointment_id,),
+                    ).fetchall()
+                ]
                 snapshot = {
                     "appointments": [dict(appointment)],
                     "payments": [dict(row) for row in payments],
+                    "future_appointment_links": future_appointment_links,
                 }
                 log_change(
                     con, app, "delete_appointment", "appointments", "appointment_id",
@@ -934,6 +1728,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 deleted_payments = con.execute(
                     "DELETE FROM payments WHERE appointment_id=?", (appointment_id,)
                 ).rowcount
+                con.execute(
+                    "UPDATE Future_appointments SET completed_appointment_id=NULL,"
+                    "updated_at=CURRENT_TIMESTAMP WHERE completed_appointment_id=?",
+                    (appointment_id,),
+                )
                 deleted_appointment = con.execute(
                     "DELETE FROM appointments WHERE appointment_id=?", (appointment_id,)
                 ).rowcount
@@ -990,6 +1789,32 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                             ok=False,
                             error="Υπάρχει ήδη καταχώριση παρουσίας για αυτό το ιστορικό την επιλεγμένη ημερομηνία.",
                         ), 409
+                    coverage = con.execute("""
+                        SELECT cp.coverage_type FROM appointments a
+                        LEFT JOIN CoveragePlans cp ON cp.coverage_plan_id=a.coverage_plan_id
+                        WHERE a.appointment_id=?
+                    """, (pk,)).fetchone()
+                    if coverage and coverage["coverage_type"] == "GESY":
+                        try:
+                            ensure_gesy_month(con, value)
+                        except ValidationError as exc:
+                            return jsonify(ok=False, error=str(exc)), 400
+
+                if table == "payments" and column in {"amount_due", "copayment"}:
+                    coverage = con.execute("""
+                        SELECT cp.coverage_type, a.appointment_date FROM payments pay
+                        JOIN appointments a ON a.appointment_id=pay.appointment_id
+                        LEFT JOIN CoveragePlans cp ON cp.coverage_plan_id=a.coverage_plan_id
+                        WHERE pay.payment_id=?
+                    """, (pk,)).fetchone()
+                    if coverage and coverage["coverage_type"] == "GESY" and column == "amount_due":
+                        return jsonify(ok=False, error="Η χρέωση ΓεΣΥ υπολογίζεται από το μηνιαίο Rate"), 400
+                    if coverage and coverage["coverage_type"] != "GESY" and column == "copayment":
+                        return jsonify(ok=False, error="Η συμπληρωμή ισχύει μόνο για ΓεΣΥ"), 400
+                    if coverage and coverage["coverage_type"] == "GESY" and column == "copayment":
+                        rate = ensure_gesy_month(con, coverage["appointment_date"])
+                        if value is not None and value > rate:
+                            return jsonify(ok=False, error="Η συμπληρωμή δεν μπορεί να υπερβαίνει τη χρέωση ΓεΣΥ"), 400
 
                 if table == "clinical_histories" and column == "today" and value == 1:
                     eligibility = con.execute("""
@@ -1161,11 +1986,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/api/appointment/new/<int:history_id>")
     def api_new_appointment(history_id: int):
+        payload = json_payload()
         with write_transaction(app) as con:
-            today_iso = date.today().isoformat()
+            raw_date = payload.get("appointment_date") or date.today().isoformat()
+            try:
+                appointment_date = parse_calendar_date(raw_date).isoformat()
+            except ValidationError as exc:
+                return jsonify(ok=False, error=str(exc)), 400
             duplicate = con.execute(
                 "SELECT appointment_id FROM appointments WHERE history_id=? AND appointment_date=? LIMIT 1",
-                (history_id, today_iso),
+                (history_id, appointment_date),
             ).fetchone()
             if duplicate:
                 return jsonify(
@@ -1173,27 +2003,40 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     error="Έχει γίνει ήδη καταχώριση παρουσίας για σήμερα.",
                     appointment_id=duplicate["appointment_id"],
                 ), 409
-            try:
-                default_due = automatic_appointment_due(con, history_id)
-            except LookupError:
+            if not con.execute(
+                "SELECT 1 FROM clinical_histories WHERE history_id=?", (history_id,),
+            ).fetchone():
                 return jsonify(ok=False, error="Το ιστορικό δεν βρέθηκε"), 404
+            try:
+                plan, referral, used_visits = validate_coverage(
+                    con, history_id, payload.get("coverage_plan_id"),
+                    payload.get("gesy_referral_id"), completing=True,
+                )
+                amount_due, copayment, effective_charge = financial_values_for_new_session(
+                    con, plan, appointment_date, payload.get("copayment"),
+                )
             except ValidationError as exc:
-                return jsonify(
-                    ok=False, error=f"Η χρέωση της προηγούμενης συνεδρίας δεν είναι έγκυρη: {exc}",
-                ), 400
+                return jsonify(ok=False, error=str(exc)), 400
             next_no = con.execute(
                 "SELECT COALESCE(MAX(appointment_number),0)+1 FROM appointments WHERE history_id=?",
                 (history_id,),
             ).fetchone()[0]
             cur = con.execute("""
-                INSERT INTO appointments(history_id, appointment_number, appointment_date, status, today)
-                VALUES(?,?,?, 'completed', 0)
-            """, (history_id, next_no, today_iso))
+                INSERT INTO appointments(
+                    history_id, appointment_number, appointment_date, status, today,
+                    coverage_plan_id, gesy_referral_id
+                ) VALUES(?,?,?, 'completed', 0, ?, ?)
+            """, (
+                history_id, next_no, appointment_date, plan["coverage_plan_id"],
+                referral["gesy_referral_id"] if referral else None,
+            ))
             appointment_id = cur.lastrowid
             cur = con.execute("""
-                INSERT INTO payments(appointment_id, payment_date, amount_due, amount_paid, receipt_amount)
-                VALUES(?,?,?,?,?)
-            """, (appointment_id, today_iso, default_due, 0, 0))
+                INSERT INTO payments(
+                    appointment_id, payment_date, amount_due, copayment,
+                    amount_paid, receipt_amount
+                ) VALUES(?,?,?,?,?,?)
+            """, (appointment_id, appointment_date, amount_due, copayment, 0, 0))
             payment_id = cur.lastrowid
             log_change(
                 con, app, "insert_appointment", "appointments", "appointment_id", appointment_id,
@@ -1202,8 +2045,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
         return jsonify(
             ok=True, appointment_id=appointment_id, payment_id=payment_id,
-            appointment_number=next_no, appointment_date=today_iso,
-            amount_due=default_due, amount_paid=0, receipt_amount=0,
+            appointment_number=next_no, appointment_date=appointment_date,
+            amount_due=amount_due, effective_charge=effective_charge,
+            copayment=copayment, amount_paid=0, receipt_amount=0,
+            referral_exhausted=bool(
+                referral and referral["allowed_visits"] is not None
+                and used_visits + 1 == referral["allowed_visits"]
+            ),
         )
 
     @app.post("/api/payment/ensure/<int:appointment_id>")
@@ -1224,7 +2072,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 return jsonify(ok=False, error="Η συνεδρία δεν βρέθηκε"), 404
             try:
                 default_due = automatic_appointment_due(
-                    con, appointment["history_id"],
+                    app, con, appointment["history_id"],
                     before_appointment_number=appointment["appointment_number"],
                     before_appointment_id=appointment_id,
                 )
@@ -1468,7 +2316,7 @@ def resolve_related_choice(
 
 
 def automatic_appointment_due(
-    con: sqlite3.Connection, history_id: int,
+    app: Flask, con: sqlite3.Connection, history_id: int,
     *, before_appointment_number: int | None = None, before_appointment_id: int | None = None,
 ) -> float:
     history = con.execute(
@@ -1506,11 +2354,12 @@ def automatic_appointment_due(
     """, params).fetchone()
     if previous_due:
         return float(validate_default_amount(previous_due["amount_due"]))
-    return (
-        10.0
+    setting_key, fallback = (
+        ("first_gesy_amount", "10.00")
         if normalize_search_text(history["social_security"]) == normalize_search_text("ΓΕΣΥ")
-        else 35.0
+        else ("first_other_amount", "35.00")
     )
+    return float(validate_default_amount(get_setting(app, setting_key, fallback)))
 
 
 def describe_update(table: str, column: str, pk: int) -> str:

@@ -4,7 +4,7 @@
 {% block content %}
 <section class="panel">
   <div class="panel-header">
-    <div><h1>Ενεργοποίηση / Απενεργοποίηση</h1><p>Όλα τα ενεργά και ανενεργά ιστορικά.</p></div>
+    <div class="panel-title"><div class="panel-title-row"><h1>Ενεργοποίηση / Απενεργοποίηση</h1>{% include '_record_count.html' %}</div><p>Όλα τα ενεργά και ανενεργά ιστορικά.</p></div>
     <form class="search-form" method="get" autocomplete="off"><input name="q" value="{{ q }}" placeholder="Όνομα, κινητό, Patient ID, History ID"><button>Αναζήτηση</button></form>
   </div>
   <div class="table-wrap">
@@ -18,7 +18,6 @@
     </table>
   </div>
   <div class="table-footer">
-    {% include '_record_count.html' %}
     <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
   </div>
 </section>

@@ -5,17 +5,28 @@
   <div class="panel settings-panel">
     <h1>Ρυθμίσεις</h1>
     <p>Οι ρυθμίσεις και το Undo αποθηκεύονται χωριστά από την κλινική βάση.</p>
-    <div class="setting-rule">
-      <strong>Αυτόματη χρέωση νέας συνεδρίας</strong>
-      <p>Χρησιμοποιείται η χρέωση της προηγούμενης συνεδρίας. Στην πρώτη συνεδρία η χρέωση είναι 10,00 € για ΓΕΣΥ και 35,00 € για κάθε άλλη κοινωνική ασφάλιση.</p>
-    </div>
+    <p>Η κάλυψη και η χρέωση ορίζονται πλέον ανά συνεδρία. Οι παρακάτω αλλαγές επηρεάζουν μόνο νέες μη-ΓεΣΥ συνεδρίες.</p>
   </div>
+  <div class="panel settings-panel full-width"><h2>Πλάνα κάλυψης</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Κωδικός</th><th>Τύπος</th><th>Όνομα</th><th>Προεπιλεγμένη χρέωση</th><th>Ενεργό</th><th></th></tr></thead><tbody>{% for p in coverage_plans %}<tr data-coverage-plan="{{ p.coverage_plan_id }}"><td>{{ p.code }}</td><td>{{ p.coverage_type }}</td><td><input class="plan-name" value="{{ p.name }}"></td><td>{% if p.coverage_type == 'GESY' %}Δυναμική{% else %}<input class="plan-charge" type="number" min="0" step="0.01" value="{{ p.default_charge|moneyvalue }}">{% endif %}</td><td><input class="plan-active" type="checkbox" {% if p.active %}checked{% endif %} {% if p.coverage_type == 'GESY' %}disabled{% endif %}></td><td><button class="small-btn save-coverage-plan" type="button">Αποθήκευση</button></td></tr>{% endfor %}</tbody></table></div><form id="new-coverage-plan-form" class="form-grid two-col compact-form-grid"><label>Κωδικός<input name="code" pattern="[A-Za-z0-9_]+" required></label><label>Τύπος<select name="coverage_type"><option value="SELF_PAY">Αυτοπληρωμή</option><option value="PRIVATE_INSURANCE">Ιδιωτική ασφάλιση</option></select></label><label>Όνομα<input name="name" required></label><label>Χρέωση<input name="default_charge" type="number" min="0" step="0.01" required></label><div class="full"><button class="primary-btn">Προσθήκη πλάνου</button></div></form></div>
+  <div class="panel settings-panel full-width"><h2>Μηνιαίες τιμές ΓεΣΥ</h2><p>Μπορείτε να προσθέσετε ή να διορθώσετε οποιονδήποτε μήνα, ακόμη και πριν από τον Σεπτέμβριο 2026. Αυτόματη μεταφορά της τελευταίας τιμής γίνεται μόνο από τον Σεπτέμβριο 2026 και μετά.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Έτος</th><th>Μήνας</th><th>Rate</th><th></th></tr></thead><tbody>{% for m in gesy_months %}<tr><td>{{ m.year }}</td><td>{{ '%02d'|format(m.month) }}</td><td>{{ m.rate|money }}</td><td><button type="button" class="small-btn edit-gesy-month" data-year="{{ m.year }}" data-month="{{ m.month }}" data-rate="{{ m.rate }}">Διόρθωση</button></td></tr>{% endfor %}</tbody></table></div><form id="gesy-month-form" class="form-grid two-col compact-form-grid"><label>Έτος<input name="year" type="number" min="1900" max="2200" required></label><label>Μήνας<input name="month" type="number" min="1" max="12" required></label><label>Rate<input name="rate" type="number" min="0" step="0.01" required></label><div><button class="primary-btn">Αποθήκευση μήνα</button></div></form></div>
+  <div class="panel settings-panel appointment-settings-panel"><h2>Ρυθμίσεις Ραντεβού</h2><form id="appointment-settings-form"><label>Έναρξη<input name="calendar_start" type="time" value="{{ appointment_settings.calendar_start }}"></label><label>Τέλος<input name="calendar_end" type="time" value="{{ appointment_settings.calendar_end }}"></label><label>Πρωινή ζώνη έως<input name="morning_end" type="time" value="{{ appointment_settings.morning_end }}"></label><label>Απογευματινή ζώνη από<input name="afternoon_start" type="time" value="{{ appointment_settings.afternoon_start }}"></label><input name="step" type="hidden" value="15"><fieldset><legend>Διάρκειες</legend>{% for d in (30,45,60) %}<label><input type="checkbox" name="durations" value="{{ d }}" {% if d|string in appointment_settings.durations.split(',') %}checked{% endif %}> {{ d }}'</label>{% endfor %}</fieldset><label>Προεπιλεγμένη διάρκεια<select name="default_duration">{% for d in (30,45,60) %}<option value="{{ d }}" {% if d|string == appointment_settings.default_duration %}selected{% endif %}>{{ d }} λεπτά</option>{% endfor %}</select></label><button class="primary-btn">Αποθήκευση ρυθμίσεων ραντεβού</button></form></div>
   <div class="panel settings-panel">
     <h2>Αντίγραφα ασφαλείας</h2>
     <p><strong>Τελευταίο:</strong> <span id="backup-latest">{{ backup.latest or 'Δεν υπάρχει' }}</span></p>
     <p><strong>Σύνολο:</strong> {{ backup.count }}</p>
     <p class="path-value">{{ backup.directory }}</p>
     <button id="create-backup" class="primary-btn" type="button">Δημιουργία backup τώρα</button>
+  </div>
+  <div class="panel settings-panel database-settings-panel">
+    <h2>Βάση εργασίας</h2>
+    <p>Η εφαρμογή χρησιμοποιεί τώρα:</p>
+    <p class="current-database-name">{{ database_name }}</p>
+    <p class="path-value">{{ database_path }}</p>
+    <div class="database-actions">
+      <button id="select-database" class="primary-btn" type="button">Επιλογή βάσης εργασίας</button>
+      <button id="create-empty-database" class="small-btn" type="button">Δημιουργία κενής βάσης</button>
+    </div>
+    <p class="muted">Κάθε βάση ελέγχεται πριν χρησιμοποιηθεί. Η νέα κενή βάση δημιουργείται με το ίδιο schema και χωρίς καταχωρήσεις.</p>
   </div>
   <div class="panel settings-panel health-panel">
     <h2>Έλεγχος δεδομένων</h2>

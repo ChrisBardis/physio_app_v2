@@ -2,7 +2,11 @@
 __pycache__/
 *.py[cod]
 .venv/
+.build-venv/
 .pytest_cache/
+build/
+dist/
+release/
 
 # Local configuration and logs
 .env
@@ -16,7 +20,11 @@ __pycache__/
 *.sqlite
 *.sqlite3
 data/backups/
+data/physio_database.json
+archive/
+backups/
 physio_backups/
+fysio.instance.json
 
 # Editor and OS files
 .vscode/

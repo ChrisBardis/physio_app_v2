@@ -23,6 +23,42 @@ chmod +x setup_linux.sh start_linux.sh
 - Linux: `./start_linux.sh`.
 - Άνοιγμα: http://127.0.0.1:5000
 
+## Windows έκδοση για διανομή
+
+Η production έκδοση εγκαθίσταται ανά χρήστη στο `%LOCALAPPDATA%\Fysio` και δεν
+χρειάζεται Python ή άλλα development εργαλεία. Εκκινείται από το `fysio.exe`,
+χρησιμοποιεί Waitress μόνο στο `127.0.0.1`, προτιμά τη θύρα `8765` και ανοίγει
+τον προεπιλεγμένο browser όταν ο server είναι έτοιμος. Αν η θύρα είναι
+κατειλημμένη, επιλέγεται αυτόματα άλλη διαθέσιμη localhost θύρα.
+
+Η εγκατεστημένη δομή κρατά χωριστά τα αρχεία εφαρμογής και τα writable δεδομένα:
+
+```text
+%LOCALAPPDATA%\Fysio\
+    fysio.exe
+    _internal\
+    data\
+    backups\
+    archive\
+    logs\
+```
+
+Η αρχική Demo βρίσκεται ως packaged resource στο
+`_internal\resources\physio_new.db` και αντιγράφεται στο
+`data\physio_new.db` μόνο όταν η writable βάση δεν υπάρχει ήδη. Επανεγκατάσταση,
+αναβάθμιση και απεγκατάσταση δεν διαγράφουν τις βάσεις, τα backups ή το archive.
+
+Για reproducible build από PowerShell:
+
+```powershell
+.\build_release.ps1
+```
+
+Το script χρησιμοποιεί το `fysio.spec`, δημιουργεί το one-folder build στο
+`dist\Fysio` και, όταν είναι διαθέσιμο το Inno Setup 6, δημιουργεί το
+`release\Fysio_Setup.exe`. Οι build-only εξαρτήσεις είναι κλειδωμένες στο
+`requirements-build.txt`, ενώ η έκδοση ορίζεται κεντρικά στο `version.py`.
+
 ## Ασφάλεια δεδομένων
 
 - Νέος ασθενής και νέο ιστορικό δημιουργούνται μόνο με «Αποθήκευση».

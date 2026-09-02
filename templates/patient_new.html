@@ -3,31 +3,37 @@
 {% block title %}Νέος ασθενής — ΦΥΣΙΟ{% endblock %}
 {% block back_url %}{{ url_for('patients') }}{% endblock %}
 {% block content %}
-<section class="panel edit-panel">
-  <div class="panel-header">
-    <div><h1>Νέος ασθενής</h1><p>Η εγγραφή θα δημιουργηθεί μόνο όταν πατήσετε «Αποθήκευση».</p></div>
+<section class="panel edit-panel new-patient-panel">
+  <div class="panel-header patient-profile-header new-patient-header">
+    <div class="patient-identity"><h1>Νέος ασθενής</h1><p class="patient-summary">Δημιουργία νέου προφίλ ασθενούς</p><p class="patient-id-note">Η εγγραφή θα δημιουργηθεί μόνο όταν πατήσετε «Αποθήκευση».</p></div>
     <a class="small-btn" href="{{ url_for('patients') }}">Ακύρωση</a>
   </div>
   {% if error %}<div class="form-error" role="alert">{{ error }}</div>{% endif %}
-  <form method="post" class="form-grid two-col manual-form" autocomplete="off" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
+  <form method="post" class="manual-form new-patient-form" autocomplete="off" data-dirty-form data-unsaved="{{ 'true' if unsaved|default(false) else 'false' }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Όνομα{{ autocomplete_input('first_name', values.first_name, 'first_name') }}</label>
-    <label>Επώνυμο<input name="last_name" value="{{ values.last_name }}" autocomplete="one-time-code"></label>
-    <label>Διεύθυνση<input name="address" value="{{ values.address }}" autocomplete="one-time-code"></label>
-    <label>Πόλη{{ autocomplete_input('city', values.city, 'city') }}</label>
-    <label>Ταχυδρομικός κώδικας<input name="postal_code" value="{{ values.postal_code }}" autocomplete="one-time-code"></label>
-    <label>Φύλο<select name="gender"><option value="">—</option><option value="Male" {% if values.gender=='Male' %}selected{% endif %}>Άνδρας</option><option value="Female" {% if values.gender=='Female' %}selected{% endif %}>Γυναίκα</option></select></label>
-    <label>Τηλέφωνο εργασίας<input name="work_phone" value="{{ values.work_phone }}" autocomplete="one-time-code"></label>
-    <label>Τηλέφωνο οικίας<input name="home_phone" value="{{ values.home_phone }}" autocomplete="one-time-code"></label>
-    <label>Κινητό<input name="mobile_phone" value="{{ values.mobile_phone }}" autocomplete="one-time-code"></label>
-    <label>Email<input name="email" type="email" value="{{ values.email }}" autocomplete="one-time-code"></label>
-    <label>Ημερομηνία γέννησης<input name="birthdate" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ values.birthdate|grdate }}"></label>
-    <label>Αριθμός ταυτότητας<input name="identity_number" value="{{ values.identity_number }}"></label>
-    <label>Παραπομπή από{{ autocomplete_input('referral_text', values.referral_text, 'referral', 'referral_id', values.referral_id) }}</label>
-    <label>Επάγγελμα{{ autocomplete_input('profession_text', values.profession_text, 'profession', 'profession_id', values.profession_id) }}</label>
-    <label class="check-label"><input type="checkbox" name="is_active" value="1" {% if values.is_active|string=='1' %}checked{% endif %}> Εμφάνιση στις ενεργές επαφές</label>
-    <label class="full">Σημειώσεις<textarea name="notes">{{ values.notes }}</textarea></label>
-    <div class="full form-actions"><button class="primary-btn" type="submit">Αποθήκευση</button><a class="small-btn" href="{{ url_for('patients') }}">Ακύρωση</a></div>
+    <section class="patient-form-section"><h2>Προσωπικά στοιχεία</h2><div class="form-grid two-col compact-form-grid">
+      <label>Όνομα{{ autocomplete_input('first_name', values.first_name, 'first_name') }}</label>
+      <label>Επώνυμο<input name="last_name" value="{{ values.last_name }}" autocomplete="one-time-code"></label>
+      <label>Ημερομηνία γέννησης<input name="birthdate" class="date-input" inputmode="numeric" placeholder="DD/MM/YYYY" value="{{ values.birthdate|grdate }}"></label>
+      <label>Φύλο<select name="gender"><option value="">—</option><option value="Male" {% if values.gender=='Male' %}selected{% endif %}>Άνδρας</option><option value="Female" {% if values.gender=='Female' %}selected{% endif %}>Γυναίκα</option></select></label>
+      <label>Αριθμός ταυτότητας<input name="identity_number" value="{{ values.identity_number }}"></label>
+      <label>Επάγγελμα{{ autocomplete_input('profession_text', values.profession_text, 'profession', 'profession_id', values.profession_id) }}</label>
+    </div></section>
+    <section class="patient-form-section"><h2>Επικοινωνία</h2><div class="form-grid two-col compact-form-grid">
+      <label>Κινητό<input name="mobile_phone" value="{{ values.mobile_phone }}" autocomplete="one-time-code"></label>
+      <label>Τηλέφωνο οικίας<input name="home_phone" value="{{ values.home_phone }}" autocomplete="one-time-code"></label>
+      <label>Τηλέφωνο εργασίας<input name="work_phone" value="{{ values.work_phone }}" autocomplete="one-time-code"></label>
+      <label>Email<input name="email" type="email" value="{{ values.email }}" autocomplete="one-time-code"></label>
+      <label>Διεύθυνση<input name="address" value="{{ values.address }}" autocomplete="one-time-code"></label>
+      <label>Πόλη{{ autocomplete_input('city', values.city, 'city') }}</label>
+      <label>Ταχυδρομικός κώδικας<input name="postal_code" value="{{ values.postal_code }}" autocomplete="one-time-code"></label>
+    </div></section>
+    <section class="patient-form-section"><h2>Λοιπά στοιχεία / Κατάσταση</h2><div class="form-grid two-col compact-form-grid">
+      <label>Παραπομπή από{{ autocomplete_input('referral_text', values.referral_text, 'referral', 'referral_id', values.referral_id) }}</label>
+      <label class="check-label status-check"><input type="checkbox" name="is_active" value="1" {% if values.is_active|string=='1' %}checked{% endif %}><span>Εμφάνιση στις ενεργές επαφές</span></label>
+    </div></section>
+    <section class="patient-form-section notes-section"><h2>Σημειώσεις</h2><div class="form-grid compact-form-grid"><label><textarea name="notes">{{ values.notes }}</textarea></label></div></section>
+    <div class="form-actions new-patient-actions"><button class="primary-btn" type="submit">Αποθήκευση</button><a class="small-btn" href="{{ url_for('patients') }}">Ακύρωση</a></div>
   </form>
 </section>
 {% endblock %}

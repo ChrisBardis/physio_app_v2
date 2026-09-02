@@ -188,7 +188,7 @@ function updateSessionTotals() {
         const value = Number.parseFloat(String(input.value || '0').trim().replace(',', '.'));
         return sum + (Number.isFinite(value) ? value : 0);
       }, 0);
-    output.textContent = total.toFixed(2);
+    output.textContent = String(Math.round(total));
   });
 }
 
@@ -260,6 +260,48 @@ function initializeInteractiveElements(root = document) {
   root.querySelectorAll('.autosave').forEach(bindAutosave);
   root.querySelectorAll('.payment-input').forEach(bindPayment);
 }
+
+document.addEventListener('dblclick', event => {
+  const row = event.target.closest('tr[data-row-open]');
+  if (!row || event.target.closest('a, button, input, select, textarea, label')) return;
+  if (!confirmInternalNavigation()) return;
+  suppressDirtyWarning = true;
+  window.location.assign(row.dataset.rowOpen);
+});
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const helper = document.createElement('textarea');
+  helper.value = text;
+  helper.setAttribute('readonly', '');
+  helper.style.position = 'fixed';
+  helper.style.opacity = '0';
+  document.body.appendChild(helper);
+  helper.select();
+  const copied = document.execCommand('copy');
+  helper.remove();
+  if (!copied) throw new Error('Το πρόγραμμα περιήγησης δεν επέτρεψε αντιγραφή στο πρόχειρο.');
+}
+
+document.addEventListener('dblclick', async event => {
+  const row = event.target.closest('.today-table tbody tr[data-list-row]');
+  if (!row) return;
+  const referral = row.querySelector('[data-column="gesy_referral"]');
+  const value = referral?.value.trim() || '';
+  if (!value) {
+    toast('Το συγκεκριμένο ιστορικό δεν έχει τιμή «Παραπεμπτικό ΓεΣΥ».');
+    return;
+  }
+  try {
+    await copyTextToClipboard(value);
+    toast('Το «Παραπεμπτικό ΓεΣΥ» αντιγράφηκε στο πρόχειρο.');
+  } catch (error) {
+    toast(error.message);
+  }
+});
 
 function upgradeCachedLayout(root = document) {
   const topbar = root.querySelector('.topbar');
@@ -583,7 +625,7 @@ document.addEventListener('change', async event => {
 document.addEventListener('click', async event => {
   const button = event.target.closest('.delete-patient');
   if (!button) return;
-  if (!window.confirm('Θα διαγραφεί ο ασθενής, τα ιστορικά του και οι παρουσίες του')) return;
+  if (!window.confirm('Θα διαγραφεί ο ασθενής, τα ιστορικά του και οι παρουσίες του, καθώς και τα προγραμματισμένα ραντεβού.')) return;
   button.disabled = true;
   try {
     await postJSON(`/api/patients/${button.dataset.patient}/delete`);
@@ -595,16 +637,64 @@ document.addEventListener('click', async event => {
   }
 });
 
-const newAppointment = document.getElementById('new-appointment');
-if (newAppointment) newAppointment.addEventListener('click', async () => {
-  if (!confirmInternalNavigation()) return;
-  newAppointment.disabled = true;
+document.addEventListener('click', async event => {
+  const button = event.target.closest('#delete-history');
+  if (!button) return;
+  if (!window.confirm('Θα διαγραφεί το ιστορικό μαζί με όλες τις συνεδρίες, τις οικονομικές εγγραφές και τα προγραμματισμένα ραντεβού του.')) return;
+  button.disabled = true;
   try {
-    await postJSON(`/api/appointment/new/${newAppointment.dataset.history}`);
+    await postJSON(`/api/histories/${button.dataset.history}/delete`);
+    suppressDirtyWarning = true;
+    window.location.assign(`/patients/${button.dataset.patient}`);
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message);
+  }
+});
+
+const newAppointment = document.getElementById('new-appointment');
+const newSessionDialog = document.getElementById('new-session-dialog');
+const sessionCoverage = document.getElementById('session-coverage');
+const syncSessionCoverage = () => {
+  const isGesy = sessionCoverage?.selectedOptions[0]?.dataset.type === 'GESY';
+  const referralLabel = document.getElementById('session-referral-label');
+  const copaymentLabel = document.getElementById('session-copayment-label');
+  if (referralLabel) referralLabel.hidden = !isGesy;
+  if (copaymentLabel) copaymentLabel.hidden = !isGesy;
+};
+sessionCoverage?.addEventListener('change', syncSessionCoverage);
+document.querySelectorAll('[data-close-session-dialog]').forEach(button => {
+  button.addEventListener('click', () => newSessionDialog?.close());
+});
+if (newAppointment) newAppointment.addEventListener('click', () => {
+  if (!confirmInternalNavigation()) return;
+  const now = new Date();
+  const dateInput = document.getElementById('session-date');
+  if (dateInput) dateInput.value = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+  syncSessionCoverage();
+  newSessionDialog?.showModal();
+});
+document.getElementById('save-new-session')?.addEventListener('click', async () => {
+  const saveButton = document.getElementById('save-new-session');
+  saveButton.disabled = true;
+  try {
+    const result = await postJSON(`/api/appointment/new/${newAppointment.dataset.history}`, {
+      appointment_date: document.getElementById('session-date').value,
+      coverage_plan_id: sessionCoverage.value,
+      gesy_referral_id: document.getElementById('session-referral').value || null,
+      copayment: sessionCoverage.selectedOptions[0]?.dataset.type === 'GESY'
+        ? document.getElementById('session-copayment').value : null,
+    });
+    if (result.referral_exhausted) {
+      const continues = window.confirm('Η τελευταία επιτρεπόμενη επίσκεψη καταχωρίστηκε και το παραπεμπτικό εξαντλήθηκε. Θα συνεχίσει ο ασθενής θεραπεία;');
+      if (continues) {
+        alert('Στην επόμενη συνεδρία επιλέξτε νέο παραπεμπτικό ΓεΣΥ, αυτοπληρωμή ή ιδιωτική ασφάλιση. Νέο παραπεμπτικό προστίθεται από την οθόνη του ιστορικού.');
+      }
+    }
     suppressDirtyWarning = true;
     window.location.reload();
   } catch (error) {
-    newAppointment.disabled = false;
+    saveButton.disabled = false;
     toast(error.message);
   }
 });
@@ -653,6 +743,8 @@ deleteAppointment?.addEventListener('click', async () => {
 const todayDateInput = document.getElementById('today-date');
 const todayNativeDate = document.getElementById('today-native-date');
 let todayCalendarButton = document.getElementById('today-calendar-button');
+const todayCalendarPopup = document.getElementById('today-calendar-popup');
+let todayCalendarMonth;
 
 // Upgrade a page still held in the server's template cache while the application restarts.
 if (!todayCalendarButton && todayNativeDate) {
@@ -677,25 +769,82 @@ function isoDateFromDisplay(value) {
   return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso ? '' : iso;
 }
 
-todayCalendarButton?.addEventListener('click', () => {
-  if (!todayNativeDate) return;
-  const visibleDate = todayDateInput ? isoDateFromDisplay(todayDateInput.value) : '';
-  const selectedDate = todayNativeDate.dataset.defaultDate
-    || todayDateInput?.form?.dataset.selectedDate
-    || isoDateFromDisplay(new URL(window.location.href).searchParams.get('date') || '')
-    || '';
-  if (!todayNativeDate.value) todayNativeDate.value = visibleDate || selectedDate;
+function calendarIso(year, month, day) {
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
 
-  if (typeof todayNativeDate.showPicker === 'function') {
-    try {
-      todayNativeDate.showPicker();
-      return;
-    } catch (_) {
-      // Older browsers continue with the compatible native click below.
-    }
+function selectTodayCalendarDate(iso) {
+  if (todayNativeDate) todayNativeDate.value = iso;
+  if (!todayDateInput) return;
+  const [year, month, day] = iso.split('-');
+  todayDateInput.value = `${day}/${month}/${year}`;
+  todayDateInput.form?.requestSubmit();
+}
+
+function renderTodayCalendar() {
+  if (!todayCalendarPopup || !todayCalendarMonth) return;
+  const year = todayCalendarMonth.getFullYear();
+  const month = todayCalendarMonth.getMonth();
+  const title = todayCalendarPopup.querySelector('[data-calendar-title]');
+  const days = todayCalendarPopup.querySelector('[data-calendar-days]');
+  if (!title || !days) return;
+  title.textContent = new Intl.DateTimeFormat('el-GR', {month: 'long', year: 'numeric'})
+    .format(todayCalendarMonth);
+  days.replaceChildren();
+  const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+  for (let index = 0; index < firstWeekday; index += 1) days.append(document.createElement('span'));
+  const selected = todayNativeDate?.value || isoDateFromDisplay(todayDateInput?.value || '');
+  const dayCount = new Date(year, month + 1, 0).getDate();
+  for (let day = 1; day <= dayCount; day += 1) {
+    const iso = calendarIso(year, month, day);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = String(day);
+    button.dataset.calendarDate = iso;
+    button.classList.toggle('selected', iso === selected);
+    button.setAttribute('aria-label', new Intl.DateTimeFormat('el-GR', {
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    }).format(new Date(year, month, day)));
+    days.append(button);
   }
-  todayNativeDate.focus({preventScroll: true});
-  todayNativeDate.click();
+}
+
+todayCalendarButton?.addEventListener('click', () => {
+  if (!todayCalendarPopup) {
+    if (!todayNativeDate) return;
+    todayNativeDate.focus({preventScroll: true});
+    todayNativeDate.click();
+    return;
+  }
+  if (!todayCalendarPopup.hidden) {
+    todayCalendarPopup.hidden = true;
+    return;
+  }
+  const iso = todayNativeDate?.value
+    || isoDateFromDisplay(todayDateInput?.value || '')
+    || todayNativeDate?.dataset.defaultDate;
+  const selected = /^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? new Date(`${iso}T00:00:00`) : new Date();
+  todayCalendarMonth = new Date(selected.getFullYear(), selected.getMonth(), 1);
+  renderTodayCalendar();
+  todayCalendarPopup.hidden = false;
+});
+
+todayCalendarPopup?.addEventListener('click', event => {
+  const monthButton = event.target.closest('[data-calendar-month]');
+  if (monthButton && todayCalendarMonth) {
+    todayCalendarMonth.setMonth(todayCalendarMonth.getMonth() + (monthButton.dataset.calendarMonth === 'next' ? 1 : -1));
+    renderTodayCalendar();
+    return;
+  }
+  const dayButton = event.target.closest('[data-calendar-date]');
+  if (!dayButton) return;
+  todayCalendarPopup.hidden = true;
+  selectTodayCalendarDate(dayButton.dataset.calendarDate);
+});
+
+document.addEventListener('click', event => {
+  if (!todayCalendarPopup || todayCalendarPopup.hidden) return;
+  if (!event.target.closest('.date-input-with-calendar')) todayCalendarPopup.hidden = true;
 });
 
 todayNativeDate?.addEventListener('change', () => {
@@ -722,6 +871,116 @@ if (defaultAmount) defaultAmount.addEventListener('change', async () => {
   }
 });
 
+document.querySelectorAll('.setting-amount').forEach(input => input.addEventListener('change', async () => {
+  const original = input.defaultValue;
+  const settingKey = input.dataset.settingKey;
+  pendingSaves += 1;
+  try {
+    const result = await postJSON('/api/settings', {[settingKey]: input.value});
+    const value = result.values?.[settingKey];
+    input.value = value;
+    input.defaultValue = value;
+    toast('Η ρύθμιση αποθηκεύτηκε');
+  } catch (error) {
+    input.value = original;
+    toast(error.message);
+  } finally {
+    pendingSaves = Math.max(0, pendingSaves - 1);
+  }
+}));
+
+const newGesyReferralForm = document.getElementById('new-gesy-referral-form');
+newGesyReferralForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = new FormData(newGesyReferralForm);
+  try {
+    await postJSON(`/api/histories/${newGesyReferralForm.dataset.history}/gesy-referrals`, {
+      referral_number: form.get('referral_number'),
+      allowed_visits: form.get('allowed_visits'),
+      notes: form.get('notes'),
+    });
+    suppressDirtyWarning = true;
+    window.location.reload();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+document.querySelectorAll('.save-coverage-plan').forEach(button => {
+  button.addEventListener('click', async () => {
+    const row = button.closest('[data-coverage-plan]');
+    try {
+      await postJSON(`/api/coverage-plans/${row.dataset.coveragePlan}`, {
+        name: row.querySelector('.plan-name').value,
+        default_charge: row.querySelector('.plan-charge')?.value ?? null,
+        active: row.querySelector('.plan-active')?.checked ?? true,
+      });
+      toast('Το πλάνο κάλυψης αποθηκεύτηκε');
+    } catch (error) { toast(error.message); }
+  });
+});
+
+document.getElementById('new-coverage-plan-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  try {
+    await postJSON('/api/coverage-plans', Object.fromEntries(form));
+    suppressDirtyWarning = true;
+    window.location.reload();
+  } catch (error) { toast(error.message); }
+});
+
+const gesyMonthForm = document.getElementById('gesy-month-form');
+document.querySelectorAll('.edit-gesy-month').forEach(button => {
+  button.addEventListener('click', () => {
+    gesyMonthForm.elements.year.value = button.dataset.year;
+    gesyMonthForm.elements.month.value = button.dataset.month;
+    gesyMonthForm.elements.rate.value = button.dataset.rate;
+    gesyMonthForm.elements.rate.focus();
+  });
+});
+gesyMonthForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    await postJSON('/api/gesy-months', Object.fromEntries(new FormData(gesyMonthForm)));
+    suppressDirtyWarning = true;
+    window.location.reload();
+  } catch (error) { toast(error.message); }
+});
+
+const appointmentSettingsForm = document.getElementById('appointment-settings-form');
+const syncAppointmentDurationOptions = () => {
+  if (!appointmentSettingsForm) return;
+  const enabled = new Set(
+    Array.from(appointmentSettingsForm.querySelectorAll('input[name="durations"]:checked'))
+      .map(input => input.value)
+  );
+  const select = appointmentSettingsForm.elements.default_duration;
+  Array.from(select.options).forEach(option => { option.disabled = !enabled.has(option.value); });
+  if (!enabled.has(select.value) && enabled.size) select.value = enabled.values().next().value;
+};
+appointmentSettingsForm?.querySelectorAll('input[name="durations"]').forEach(
+  input => input.addEventListener('change', syncAppointmentDurationOptions)
+);
+syncAppointmentDurationOptions();
+appointmentSettingsForm?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = new FormData(appointmentSettingsForm);
+  const appointmentSettings = Object.fromEntries(
+    ['calendar_start','calendar_end','morning_end','afternoon_start','step','default_duration']
+      .map(key => [key, form.get(key)])
+  );
+  appointmentSettings.durations = form.getAll('durations').map(Number);
+  if (!appointmentSettings.durations.length) {
+    toast('Ενεργοποιήστε τουλάχιστον μία διάρκεια');
+    return;
+  }
+  try {
+    await postJSON('/api/settings', {appointment_settings: appointmentSettings});
+    toast('Οι ρυθμίσεις ραντεβού αποθηκεύτηκαν');
+  } catch (error) { toast(error.message); }
+});
+
 const backupButton = document.getElementById('create-backup');
 if (backupButton) backupButton.addEventListener('click', async () => {
   backupButton.disabled = true;
@@ -736,6 +995,51 @@ if (backupButton) backupButton.addEventListener('click', async () => {
     backupButton.disabled = false;
   }
 });
+
+const createEmptyDatabaseButton = document.getElementById('create-empty-database');
+createEmptyDatabaseButton?.addEventListener('click', async () => {
+  createEmptyDatabaseButton.disabled = true;
+  try {
+    const result = await postJSON('/api/database/create-empty');
+    if (!result.cancelled) {
+      window.alert(`Η κενή βάση δημιουργήθηκε επιτυχώς:\n\n${result.path}`);
+    }
+  } catch (error) {
+    window.alert(`Η κενή βάση δεν δημιουργήθηκε.\n\n${error.message}`);
+  } finally {
+    createEmptyDatabaseButton.disabled = false;
+  }
+});
+
+const selectDatabaseButton = document.getElementById('select-database');
+selectDatabaseButton?.addEventListener('click', async () => {
+  if (hasUnsavedChanges()) {
+    window.alert('Περιμένετε να ολοκληρωθούν οι αποθηκεύσεις πριν αλλάξετε βάση.');
+    return;
+  }
+  if (!window.confirm('Θα ανοίξει η επιλογή αρχείου των Windows. Μετά τον έλεγχο, η εφαρμογή θα μεταβεί στην επιλεγμένη βάση.')) return;
+  selectDatabaseButton.disabled = true;
+  try {
+    const result = await postJSON('/api/database/select');
+    if (result.cancelled) return;
+    suppressDirtyWarning = true;
+    window.alert(`Η βάση εργασίας άλλαξε επιτυχώς:\n\n${result.path}`);
+    window.location.assign('/');
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    selectDatabaseButton.disabled = false;
+  }
+});
+
+const databaseStartupDialog = document.getElementById('database-startup-dialog');
+if (databaseStartupDialog) {
+  if (typeof databaseStartupDialog.showModal === 'function') {
+    databaseStartupDialog.showModal();
+  } else {
+    window.alert(`Βάση εργασίας:\n\n${databaseStartupDialog.querySelector('.path-value')?.textContent || ''}`);
+  }
+}
 
 async function performUndo() {
   if (undoBusy) return;
@@ -963,3 +1267,52 @@ function bindInfiniteList(body) {
 }
 
 document.querySelectorAll('[data-infinite-list]').forEach(bindInfiniteList);
+
+function initializePersistentTableHeaders() {
+  const topbar = document.querySelector('.topbar');
+  document.querySelectorAll('.table-wrap').forEach(wrap => {
+    const table = wrap.querySelector('.data-table');
+    const sourceHead = table?.querySelector('thead');
+    if (!table || !sourceHead) return;
+
+    const fixedWrap = document.createElement('div');
+    fixedWrap.className = 'sticky-table-header';
+    fixedWrap.hidden = true;
+    const fixedTable = document.createElement('table');
+    fixedTable.className = table.className;
+    fixedTable.append(sourceHead.cloneNode(true));
+    fixedWrap.append(fixedTable);
+    document.body.append(fixedWrap);
+
+    const sync = () => {
+      const topbarBottom = Math.round(topbar?.getBoundingClientRect().bottom || 0);
+      const tableRect = table.getBoundingClientRect();
+      const headRect = sourceHead.getBoundingClientRect();
+      const wrapRect = wrap.getBoundingClientRect();
+      const visible = headRect.top < topbarBottom && tableRect.bottom > topbarBottom + headRect.height;
+      fixedWrap.hidden = !visible;
+      if (!visible) return;
+
+      fixedWrap.style.top = `${topbarBottom}px`;
+      fixedWrap.style.left = `${Math.round(wrapRect.left)}px`;
+      fixedWrap.style.width = `${Math.round(wrapRect.width)}px`;
+      fixedTable.style.width = `${Math.round(table.scrollWidth)}px`;
+      fixedTable.style.transform = `translateX(${-wrap.scrollLeft}px)`;
+
+      const sourceCells = sourceHead.querySelectorAll('th');
+      fixedTable.querySelectorAll('th').forEach((cell, index) => {
+        const width = sourceCells[index]?.getBoundingClientRect().width || 0;
+        cell.style.width = `${width}px`;
+        cell.style.minWidth = `${width}px`;
+        cell.style.maxWidth = `${width}px`;
+      });
+    };
+
+    window.addEventListener('scroll', sync, {passive: true});
+    window.addEventListener('resize', sync);
+    wrap.addEventListener('scroll', sync, {passive: true});
+    sync();
+  });
+}
+
+initializePersistentTableHeaders();

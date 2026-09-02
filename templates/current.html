@@ -18,38 +18,52 @@
       <div><span class="label">Επώνυμο</span><strong>{{ history.last_name or '' }}</strong></div>
       <div><span class="label">Ημερομηνία γέννησης</span><strong>{{ history.birthdate|grdate }}</strong></div>
       <div><span class="label">Αριθμός ταυτότητας</span><strong>{{ history.identity_number or '' }}</strong></div>
-      <div><span class="label">Κοινωνική ασφάλιση</span><strong>{{ history.social_security or '' }}</strong></div>
-      <div><span class="label">Παραπεμπτικό ΓεΣΥ</span><strong>{{ history.gesy_referral or '' }}</strong></div>
+      <div><span class="label">Legacy κοινωνική ασφάλιση</span><strong>{{ history.social_security or '—' }}</strong></div>
+      <div><span class="label">Legacy παραπεμπτικό</span><strong>{{ history.gesy_referral or '—' }}</strong></div>
     </div>
     <div class="history-summary"><div class="summary-line"><span>{{ history.main_diagnosis or '' }}</span></div><label class="history-comments"><span>Σχόλια ιστορικού</span><textarea class="problem-box autosave" data-table="clinical_histories" data-pk="{{ history.history_id }}" data-column="problem_description">{{ history.problem_description or '' }}</textarea></label></div>
     <div class="session-toolbar">
-      <h2>Συνεδρίες</h2>
+      <div class="session-heading"><h2>Συνεδρίες</h2>{% include '_record_count.html' %}</div>
       <div class="session-totals" aria-label="Σύνολα συνεδριών">
-        <div class="session-total"><span>Χρέωση</span><strong data-session-total="due">{{ '%.2f'|format(appointment_totals.due) }}</strong></div>
-        <div class="session-total"><span>Πίστωση</span><strong data-session-total="credit">{{ '%.2f'|format(appointment_totals.credit) }}</strong></div>
-        <div class="session-total"><span>Αποδείξεις</span><strong data-session-total="receipts">{{ '%.2f'|format(appointment_totals.receipts) }}</strong></div>
+        <div class="session-total"><span>Χρέωση</span><strong data-session-total="due">{{ appointment_totals.due|wholemoney }}</strong></div>
+        <div class="session-total"><span>Πίστωση</span><strong data-session-total="credit">{{ appointment_totals.credit|wholemoney }}</strong></div>
+        <div class="session-total"><span>Αποδείξεις</span><strong data-session-total="receipts">{{ appointment_totals.receipts|wholemoney }}</strong></div>
       </div>
       <button id="new-appointment" class="primary-btn" data-history="{{ history.history_id }}">+ Νέα συνεδρία</button>
+      <a class="small-btn" href="{{ url_for('future_appointments', patient_id=history.patient_id, history_id=history.history_id) }}">Επόμενο ραντεβού</a>
       <button id="delete-appointment" class="danger-btn" type="button" disabled>Διαγραφή παρουσίας</button>
     </div>
     <div class="table-wrap sessions-wrap">
-      <table class="data-table sessions-table"><thead><tr>{{ sortable('Α/Α', 'number', current_sort, current_dir) }}{{ sortable('Ημερομηνία', 'date', current_sort, current_dir) }}{{ sortable('Χρέωση', 'due', current_sort, current_dir) }}{{ sortable('Πληρωμή', 'paid', current_sort, current_dir) }}{{ sortable('Απόδειξη', 'receipt', current_sort, current_dir) }}{{ sortable('Σημειώσεις', 'notes', current_sort, current_dir) }}</tr></thead><tbody id="appointments-body">
+      <table class="data-table sessions-table"><thead><tr>{{ sortable('Α/Α', 'number', current_sort, current_dir) }}{{ sortable('Ημερομηνία', 'date', current_sort, current_dir) }}<th>Κάλυψη</th><th>Παραπεμπτικό</th>{{ sortable('Χρέωση', 'due', current_sort, current_dir) }}<th>Συμπληρωμή</th>{{ sortable('Είσπραξη', 'paid', current_sort, current_dir) }}{{ sortable('Απόδειξη', 'receipt', current_sort, current_dir) }}{{ sortable('Σημειώσεις', 'notes', current_sort, current_dir) }}</tr></thead><tbody id="appointments-body">
       {% for a in appointments %}
         <tr data-appointment="{{ a.appointment_id }}" tabindex="0" aria-selected="false">
           <td><input type="number" class="grid-input autosave" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_number" value="{{ a.appointment_number if a.appointment_number is not none else '' }}"></td>
           <td><input class="grid-input autosave date-input" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="appointment_date" value="{{ a.appointment_date|grdate }}"></td>
-          <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_due" value="{{ '%.2f'|format(a.amount_due or 0) }}"></td>
-          <td><input type="number" step="0.01" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_paid" value="{{ '%.2f'|format(a.amount_paid or 0) }}"></td>
-          <td><input type="number" step="0.01" min="0" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="receipt_amount" value="{{ a.receipt_amount|moneyvalue }}"></td>
+          <td>{{ a.coverage_name or 'Legacy / άγνωστη' }}</td>
+          <td>{% if a.referral_number %}{{ a.referral_number }}{% if a.allowed_visits %} — {{ a.used_visits }}/{{ a.allowed_visits }}{% endif %}{% else %}—{% endif %}</td>
+          <td>{% if a.coverage_type == 'GESY' %}<span>{{ a.effective_charge|wholemoney }}</span>{% else %}<input type="number" step="1" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_due" value="{{ a.amount_due|wholemoney }}">{% endif %}</td>
+          <td>{% if a.coverage_type == 'GESY' %}<input type="number" step="1" min="0" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="copayment" value="{{ a.copayment|wholemoney }}">{% else %}—{% endif %}</td>
+          <td><input type="number" step="1" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="amount_paid" value="{{ a.amount_paid|wholemoney }}"></td>
+          <td><input type="number" step="1" min="0" class="grid-input payment-input" data-appointment="{{ a.appointment_id }}" data-payment="{{ a.payment_id or '' }}" data-column="receipt_amount" value="{{ a.receipt_amount|wholemoney }}"></td>
           <td><input class="grid-input autosave" data-table="appointments" data-pk="{{ a.appointment_id }}" data-column="notes" value="{{ a.notes or '' }}"></td>
         </tr>
-      {% else %}<tr id="no-appointments"><td colspan="6" class="empty">Δεν υπάρχουν συνεδρίες.</td></tr>{% endfor %}
+      {% else %}<tr id="no-appointments"><td colspan="10" class="empty">Δεν υπάρχουν συνεδρίες.</td></tr>{% endfor %}
       </tbody></table>
     </div>
-    <div class="table-footer sessions-footer">{% include '_record_count.html' %}</div>
   </section>
   {% else %}
   <section class="panel empty-state current-empty"><h1>{{ current_view_label }}</h1><p>{{ current_empty_message }}</p></section>
   {% endif %}
 </section>
+{% if history %}<dialog id="new-session-dialog" class="future-appointment-dialog">
+  <button class="dialog-close" type="button" data-close-session-dialog aria-label="Κλείσιμο">×</button>
+  <h2>Νέα συνεδρία</h2>
+  <div class="future-form-grid">
+    <label>Ημερομηνία<input id="session-date" class="date-input" value="{{ ''|grdate }}" placeholder="DD/MM/YYYY"></label>
+    <label>Κάλυψη<select id="session-coverage"><option value="">— Επιλέξτε —</option>{% for p in coverage_plans %}<option value="{{ p.coverage_plan_id }}" data-type="{{ p.coverage_type }}">{{ p.name }}{% if p.default_charge is not none %} — {{ p.default_charge|money }}{% endif %}</option>{% endfor %}</select></label>
+    <label id="session-referral-label" hidden>Παραπεμπτικό<select id="session-referral"><option value="">— Επιλέξτε —</option>{% for r in gesy_referrals %}<option value="{{ r.gesy_referral_id }}">{{ r.referral_number or ('Παραπεμπτικό #' ~ r.gesy_referral_id) }}{% if r.allowed_visits %} — {{ r.used_visits }}/{{ r.allowed_visits }}{% else %} — άγνωστο όριο{% endif %}</option>{% endfor %}</select></label>
+    <label id="session-copayment-label" hidden>Συμπληρωμή<input id="session-copayment" type="number" min="0" step="1" value="0"></label>
+  </div>
+  <div class="future-dialog-actions"><button type="button" class="small-btn" data-close-session-dialog>Ακύρωση</button><button id="save-new-session" type="button" class="primary-btn">Καταχώριση</button></div>
+</dialog>{% endif %}
 {% endblock %}

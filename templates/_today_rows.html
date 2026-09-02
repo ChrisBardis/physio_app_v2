@@ -2,14 +2,15 @@
 <tr data-list-row>
   <td><a href="{{ url_for('patient_detail', patient_id=r.patient_id) }}">{{ r.patient_id }}</a></td>
   <td><a href="{{ url_for('history_detail', history_id=r.history_id) }}">{{ r.history_id }}</a></td>
-  <td><input class="grid-input autosave" aria-label="Επώνυμο ασθενούς {{ r.patient_id }}" data-table="patients" data-pk="{{ r.patient_id }}" data-column="last_name" value="{{ r.last_name or '' }}"></td>
-  <td><input class="grid-input autosave" aria-label="Όνομα ασθενούς {{ r.patient_id }}" data-table="patients" data-pk="{{ r.patient_id }}" data-column="first_name" value="{{ r.first_name or '' }}"></td>
-  <td><input class="grid-input autosave" aria-label="Κοινωνική ασφάλιση ιστορικού {{ r.history_id }}" data-table="clinical_histories" data-pk="{{ r.history_id }}" data-column="social_security" value="{{ r.social_security or '' }}"></td>
-  <td><input class="grid-input autosave" aria-label="Παραπεμπτικό ΓεΣΥ ιστορικού {{ r.history_id }}" data-table="clinical_histories" data-pk="{{ r.history_id }}" data-column="gesy_referral" value="{{ r.gesy_referral or '' }}"></td>
-  <td><input class="grid-input autosave date-input" aria-label="Γέννηση ασθενούς {{ r.patient_id }}" inputmode="numeric" placeholder="DD/MM/YYYY" data-table="patients" data-pk="{{ r.patient_id }}" data-column="birthdate" value="{{ r.birthdate|grdate }}"></td>
-  <td><input class="grid-input autosave" aria-label="Αριθμός ταυτότητας ασθενούς {{ r.patient_id }}" data-table="patients" data-pk="{{ r.patient_id }}" data-column="identity_number" value="{{ r.identity_number or '' }}"></td>
-  <td><input class="grid-input autosave" aria-label="Κινητό ασθενούς {{ r.patient_id }}" data-table="patients" data-pk="{{ r.patient_id }}" data-column="mobile_phone" value="{{ r.mobile_phone or '' }}"></td>
+  <td>{{ r.last_name or '' }}</td>
+  <td>{{ r.first_name or '' }}</td>
+  <td>{{ r.coverage_name or 'Legacy / άγνωστη' }}</td>
+  <td>{% if r.referral_number %}{{ r.referral_number }}{% if r.allowed_visits %} — {{ r.used_visits }}/{{ r.allowed_visits }}{% endif %}{% else %}—{% endif %}</td>
+  <td>{{ r.effective_charge|wholemoney }}</td>
+  <td>{% if r.coverage_type == 'GESY' %}{{ r.copayment|wholemoney }}{% else %}—{% endif %}</td>
+  <td>{{ r.amount_paid|wholemoney }}</td>
+  <td>{{ r.receipt_amount|wholemoney }}</td>
 </tr>
 {% else %}
-{% if not request.args.get('offset') %}<tr data-empty-row><td colspan="9" class="empty">Δεν υπάρχουν καταχωρημένα ραντεβού για την επιλεγμένη ημερομηνία.</td></tr>{% endif %}
+{% if not request.args.get('offset') %}<tr data-empty-row><td colspan="10" class="empty">Δεν υπάρχουν καταχωρημένα ραντεβού για την επιλεγμένη ημερομηνία.</td></tr>{% endif %}
 {% endfor %}

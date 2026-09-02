@@ -1,0 +1,2 @@
+Η κενή βαση δεν δημιουργήθηκε
+no display name and no $DISPLAY environment variable

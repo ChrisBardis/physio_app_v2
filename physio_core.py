@@ -12,10 +12,38 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from fysio_paths import (
+    ARCHIVE_DIR,
+    DEFAULT_BACKUP_DIR,
+    DEFAULT_DATABASE_SELECTION,
+    DEFAULT_DB,
+    DEFAULT_META_DB,
+    LOG_DIR,
+    RESOURCE_ROOT,
+    STATIC_DIR,
+    TEMPLATE_DIR,
+    prepare_writable_layout,
+)
 
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DB = BASE_DIR / "data" / "physio_new.db"
-DEFAULT_META_DB = BASE_DIR / "data" / "physio_app_meta.db"
+
+BASE_DIR = RESOURCE_ROOT
+
+REQUIRED_CLINICAL_TABLES = {
+    "patients",
+    "clinical_histories",
+    "appointments",
+    "payments",
+    "referrals",
+    "professions",
+    "doctors",
+}
+
+REQUIRED_CLINICAL_COLUMNS = {
+    "patients": {"patient_id", "first_name", "last_name", "is_active"},
+    "clinical_histories": {"history_id", "patient_id", "is_active", "today"},
+    "appointments": {"appointment_id", "history_id", "appointment_date"},
+    "payments": {"payment_id", "appointment_id", "amount_due", "amount_paid"},
+}
 
 ALLOWED_COLUMNS = {
     "patients": {
@@ -28,11 +56,12 @@ ALLOWED_COLUMNS = {
         "doctor_id", "social_security", "body_area", "for_print", "for_xrays", "for_exercise",
         "today", "icd10_code", "gesy_referral",
     },
-    "appointments": {
-        "appointment_number", "appointment_date", "appointment_time", "status", "notes", "today",
-    },
     "payments": {
-        "payment_date", "amount_due", "amount_paid", "receipt_amount", "payment_method", "notes",
+        "payment_date", "amount_due", "amount_paid", "receipt_amount", "copayment",
+        "payment_method", "notes",
+    },
+    "appointments": {
+        "appointment_number", "appointment_date", "appointment_time", "notes", "today",
     },
 }
 
@@ -62,6 +91,7 @@ MONEY_COLUMNS = {
     ("payments", "amount_due"),
     ("payments", "amount_paid"),
     ("payments", "receipt_amount"),
+    ("payments", "copayment"),
 }
 
 DATE_COLUMNS = {
@@ -75,6 +105,181 @@ DATE_COLUMNS = {
 
 class ValidationError(ValueError):
     pass
+
+
+def validate_clinical_database(db_path: str | Path) -> Path:
+    """Return a verified, existing clinical SQLite database path.
+
+    The connection is strictly read-only so a missing or invalid selection can
+    never result in SQLite silently creating a replacement file.
+    """
+    path = Path(db_path).expanduser().resolve()
+    if path.suffix.casefold() != ".db":
+        raise ValidationError("Επιλέξτε αρχείο βάσης με κατάληξη .db")
+    if not path.exists() or not path.is_file():
+        raise ValidationError(f"Η βάση δεν βρέθηκε: {path}")
+
+    try:
+        con = sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10,
+        )
+    except sqlite3.Error as exc:
+        raise ValidationError(f"Το αρχείο δεν είναι έγκυρη βάση SQLite: {exc}") from exc
+    try:
+        integrity = con.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            detail = integrity[0] if integrity else "άγνωστο σφάλμα"
+            raise ValidationError(f"Η βάση απέτυχε στον έλεγχο ακεραιότητας: {detail}")
+        tables = {
+            row[0]
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        missing_tables = sorted(REQUIRED_CLINICAL_TABLES - tables)
+        if missing_tables:
+            raise ValidationError(
+                "Η βάση δεν έχει το αναμενόμενο schema. Λείπουν οι πίνακες: "
+                + ", ".join(missing_tables)
+            )
+        for table, required_columns in REQUIRED_CLINICAL_COLUMNS.items():
+            columns = {row[1] for row in con.execute(f'PRAGMA table_info("{table}")')}
+            missing_columns = sorted(required_columns - columns)
+            if missing_columns:
+                raise ValidationError(
+                    f"Η βάση δεν έχει το αναμενόμενο schema στον πίνακα {table}. "
+                    "Λείπουν τα πεδία: " + ", ".join(missing_columns)
+                )
+    except sqlite3.Error as exc:
+        raise ValidationError(f"Δεν ήταν δυνατός ο έλεγχος της βάσης: {exc}") from exc
+    finally:
+        con.close()
+
+    return path
+
+
+def load_database_selection(config_path: str | Path) -> Path | None:
+    path = Path(config_path).expanduser().resolve()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"Δεν διαβάστηκε η αποθηκευμένη επιλογή βάσης: {exc}") from exc
+    selected = payload.get("database_path") if isinstance(payload, dict) else None
+    if not isinstance(selected, str) or not selected.strip():
+        raise ValidationError("Η αποθηκευμένη επιλογή βάσης δεν είναι έγκυρη")
+    return Path(selected).expanduser().resolve()
+
+
+def save_database_selection(config_path: str | Path, db_path: str | Path) -> None:
+    config = Path(config_path).expanduser().resolve()
+    selected = Path(db_path).expanduser().resolve()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    temporary = config.with_name(f".{config.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(
+                {"database_path": str(selected)}, ensure_ascii=False, indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(config)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def choose_database_file(
+    initial_directory: str | Path, *, create_new: bool = False,
+) -> Path | None:
+    """Open the native Windows file dialog used by the local application."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except (ImportError, RuntimeError) as exc:
+        raise ValidationError(f"Δεν είναι διαθέσιμο το παράθυρο επιλογής των Windows: {exc}") from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+        common = {
+            "initialdir": str(Path(initial_directory).expanduser().resolve()),
+            "filetypes": [("Βάσεις SQLite", "*.db"), ("Όλα τα αρχεία", "*.*")],
+            "parent": root,
+        }
+        if create_new:
+            selected = filedialog.asksaveasfilename(
+                title="Δημιουργία κενής βάσης εργασίας",
+                defaultextension=".db",
+                **common,
+            )
+        else:
+            selected = filedialog.askopenfilename(
+                title="Επιλογή βάσης εργασίας",
+                **common,
+            )
+    finally:
+        root.destroy()
+    return Path(selected).expanduser().resolve() if selected else None
+
+
+def create_empty_schema_database(source_path: str | Path, destination_path: str | Path) -> Path:
+    """Create a data-free database containing the source clinical schema."""
+    source_path = validate_clinical_database(source_path)
+    destination = Path(destination_path).expanduser().resolve()
+    if destination.suffix.casefold() != ".db":
+        destination = destination.with_suffix(".db")
+    if destination == source_path:
+        raise ValidationError("Η νέα βάση δεν μπορεί να αντικαταστήσει τη βάση εργασίας")
+    if destination.exists():
+        raise ValidationError("Υπάρχει ήδη αρχείο με αυτό το όνομα")
+    if not destination.parent.exists():
+        raise ValidationError("Ο φάκελος προορισμού δεν υπάρχει")
+
+    source = sqlite3.connect(
+        f"file:{source_path.as_posix()}?mode=ro", uri=True, timeout=30,
+    )
+    target = sqlite3.connect(destination, timeout=30)
+    try:
+        schema_rows = source.execute(
+            """
+            SELECT type, name, sql
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+            ORDER BY CASE type
+                WHEN 'table' THEN 1 WHEN 'index' THEN 2
+                WHEN 'trigger' THEN 3 WHEN 'view' THEN 4 ELSE 5 END,
+                name
+            """
+        ).fetchall()
+        if not schema_rows:
+            raise ValidationError("Η βάση εργασίας δεν περιέχει schema")
+        target.execute("BEGIN IMMEDIATE")
+        for _object_type, _name, sql in schema_rows:
+            target.execute(sql)
+        user_version = source.execute("PRAGMA user_version").fetchone()[0]
+        application_id = source.execute("PRAGMA application_id").fetchone()[0]
+        target.execute(f"PRAGMA user_version={int(user_version)}")
+        target.execute(f"PRAGMA application_id={int(application_id)}")
+        target.commit()
+        integrity = target.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ValidationError(f"Η νέα βάση απέτυχε στον έλεγχο ακεραιότητας: {integrity}")
+        for table in REQUIRED_CLINICAL_TABLES:
+            if target.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] != 0:
+                raise ValidationError("Η νέα βάση περιέχει δεδομένα")
+    except Exception:
+        target.rollback()
+        target.close()
+        source.close()
+        destination.unlink(missing_ok=True)
+        raise
+    else:
+        target.close()
+        source.close()
+    validate_clinical_database(destination)
+    return destination
 
 
 def normalize_search_text(value: Any) -> str:
@@ -104,28 +309,40 @@ def connect_db(path: str | Path) -> sqlite3.Connection:
 
 
 @contextmanager
+def database_guard(app: Any) -> Iterator[None]:
+    lock = app.config.get("DB_SWITCH_LOCK")
+    if lock is None:
+        yield
+        return
+    with lock:
+        yield
+
+
+@contextmanager
 def db_conn(app: Any) -> Iterator[sqlite3.Connection]:
-    con = connect_db(app.config["DB_PATH"])
-    try:
-        yield con
-    finally:
-        con.close()
+    with database_guard(app):
+        con = connect_db(app.config["DB_PATH"])
+        try:
+            yield con
+        finally:
+            con.close()
 
 
 @contextmanager
 def write_transaction(app: Any, *, with_meta: bool = True) -> Iterator[sqlite3.Connection]:
-    con = connect_db(app.config["DB_PATH"])
-    try:
-        if with_meta:
-            con.execute("ATTACH DATABASE ? AS app_meta", (str(app.config["META_DB_PATH"]),))
-        con.execute("BEGIN IMMEDIATE")
-        yield con
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+    with database_guard(app):
+        con = connect_db(app.config["DB_PATH"])
+        try:
+            if with_meta:
+                con.execute("ATTACH DATABASE ? AS app_meta", (str(app.config["META_DB_PATH"]),))
+            con.execute("BEGIN IMMEDIATE")
+            yield con
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
 
 
 def init_meta_db(meta_path: str | Path) -> None:
@@ -163,6 +380,8 @@ def init_meta_db(meta_path: str | Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_change_log_db_undo ON change_log(db_identity, undone, id)"
         )
         con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('default_amount_due','35.00')")
+        con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('first_gesy_amount','10.00')")
+        con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('first_other_amount','35.00')")
         con.execute(
             "INSERT OR IGNORE INTO settings(key,value) VALUES('secret_key',?)",
             (secrets.token_hex(32),),
@@ -214,6 +433,280 @@ def migrate_receipt_amount(app: Any) -> bool:
         con.close()
 
 
+def migrate_future_appointments(app: Any) -> bool:
+    """Create or finish the scheduled-appointment schema after a backup."""
+    db_path = Path(app.config["DB_PATH"]).resolve()
+    required_indexes = {
+        "idx_future_appointments_date",
+        "idx_future_appointments_patient_date",
+        "idx_future_appointments_history",
+        "idx_future_appointments_status",
+    }
+    con = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=30)
+    try:
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND lower(name)=lower(?)",
+            ("Future_appointments",),
+        ).fetchone()
+        indexes = {
+            row[1] for row in con.execute("PRAGMA index_list('Future_appointments')")
+        } if exists else set()
+    finally:
+        con.close()
+    if exists and required_indexes.issubset(indexes):
+        return False
+    create_backup(app, force=True)
+    con = connect_db(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS Future_appointments (
+                future_appointment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL,
+                history_id INTEGER NOT NULL,
+                appointment_date TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL CHECK(duration_minutes > 0),
+                status TEXT NOT NULL DEFAULT 'scheduled'
+                    CHECK(status IN ('scheduled','completed','cancelled','no_show')),
+                notes TEXT,
+                completed_appointment_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(patient_id) REFERENCES patients(patient_id),
+                FOREIGN KEY(history_id) REFERENCES clinical_histories(history_id),
+                FOREIGN KEY(completed_appointment_id) REFERENCES appointments(appointment_id)
+            )
+        """)
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_future_appointments_date "
+            "ON Future_appointments(appointment_date)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_future_appointments_patient_date "
+            "ON Future_appointments(patient_id, appointment_date)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_future_appointments_history "
+            "ON Future_appointments(history_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_future_appointments_status "
+            "ON Future_appointments(status)"
+        )
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+SESSION_COVERAGE_MIGRATION = "2026_09_session_coverage_v1"
+
+
+def migrate_session_coverage(app: Any) -> bool:
+    """Add the per-session coverage model without inferring legacy coverage.
+
+    Existing appointment financial values remain byte-for-byte untouched. The
+    migration only creates legacy referral records from the history-level text;
+    it deliberately leaves every existing appointment coverage/referral and
+    payment copayment NULL.
+    """
+    db_path = Path(app.config["DB_PATH"]).resolve()
+    read_only = sqlite3.connect(
+        f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=30,
+    )
+    try:
+        tables = {
+            row[0] for row in read_only.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if not {"clinical_histories", "appointments", "payments", "Future_appointments"}.issubset(tables):
+            return False
+        already_done = bool(read_only.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone() and read_only.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_key=?",
+            (SESSION_COVERAGE_MIGRATION,),
+        ).fetchone())
+    finally:
+        read_only.close()
+    if already_done:
+        return False
+
+    create_backup(app, force=True)
+    con = connect_db(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_key TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                details TEXT
+            )
+        """)
+        if con.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_key=?",
+            (SESSION_COVERAGE_MIGRATION,),
+        ).fetchone():
+            con.rollback()
+            return False
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS CoveragePlans (
+                coverage_plan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                coverage_type TEXT NOT NULL
+                    CHECK(coverage_type IN ('GESY','PRIVATE_INSURANCE','SELF_PAY')),
+                name TEXT NOT NULL,
+                default_charge REAL CHECK(default_charge IS NULL OR default_charge >= 0),
+                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS GesyReferrals (
+                gesy_referral_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                history_id INTEGER NOT NULL,
+                referral_number TEXT,
+                allowed_visits INTEGER CHECK(allowed_visits IS NULL OR allowed_visits > 0),
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(history_id) REFERENCES clinical_histories(history_id)
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS GesyMonth (
+                gesy_month_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL CHECK(month BETWEEN 1 AND 12),
+                rate REAL NOT NULL CHECK(rate >= 0),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(year, month)
+            )
+        """)
+
+        appointment_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(appointments)")
+        }
+        if "coverage_plan_id" not in appointment_columns:
+            con.execute(
+                "ALTER TABLE appointments ADD COLUMN coverage_plan_id INTEGER "
+                "REFERENCES CoveragePlans(coverage_plan_id)"
+            )
+        if "gesy_referral_id" not in appointment_columns:
+            con.execute(
+                "ALTER TABLE appointments ADD COLUMN gesy_referral_id INTEGER "
+                "REFERENCES GesyReferrals(gesy_referral_id)"
+            )
+
+        future_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(Future_appointments)")
+        }
+        if "coverage_plan_id" not in future_columns:
+            con.execute(
+                "ALTER TABLE Future_appointments ADD COLUMN coverage_plan_id INTEGER "
+                "REFERENCES CoveragePlans(coverage_plan_id)"
+            )
+        if "gesy_referral_id" not in future_columns:
+            con.execute(
+                "ALTER TABLE Future_appointments ADD COLUMN gesy_referral_id INTEGER "
+                "REFERENCES GesyReferrals(gesy_referral_id)"
+            )
+
+        payment_columns = {row[1] for row in con.execute("PRAGMA table_info(payments)")}
+        if "copayment" not in payment_columns:
+            con.execute(
+                "ALTER TABLE payments ADD COLUMN copayment REAL "
+                "CHECK(copayment IS NULL OR copayment >= 0)"
+            )
+
+        duplicate_payment = con.execute("""
+            SELECT appointment_id FROM payments
+            GROUP BY appointment_id HAVING COUNT(*) > 1 LIMIT 1
+        """).fetchone()
+        if duplicate_payment:
+            raise ValidationError(
+                "Η migration ακυρώθηκε: υπάρχουν πολλαπλές οικονομικές εγγραφές "
+                "για την ίδια συνεδρία"
+            )
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_appointment "
+            "ON payments(appointment_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_appointments_coverage "
+            "ON appointments(coverage_plan_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_appointments_gesy_referral "
+            "ON appointments(gesy_referral_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gesy_referrals_history "
+            "ON GesyReferrals(history_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_future_appointments_coverage "
+            "ON Future_appointments(coverage_plan_id)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_future_appointments_gesy_referral "
+            "ON Future_appointments(gesy_referral_id)"
+        )
+
+        plans = (
+            ("GESY", "GESY", "ΓεΣΥ", None),
+            ("SELF_STANDARD", "SELF_PAY", "Αυτοπληρωμή", 35.0),
+            ("SELF_DISCOUNT", "SELF_PAY", "Αυτοπληρωμή μειωμένη", 30.0),
+            ("PRIVATE_STANDARD", "PRIVATE_INSURANCE", "Ιδιωτική ασφάλιση", 35.0),
+            ("PRIVATE_DISCOUNT", "PRIVATE_INSURANCE", "Ιδιωτική ασφάλιση μειωμένη", 30.0),
+        )
+        con.executemany("""
+            INSERT OR IGNORE INTO CoveragePlans(
+                code, coverage_type, name, default_charge, active
+            ) VALUES(?,?,?,?,1)
+        """, plans)
+        con.execute("""
+            INSERT OR IGNORE INTO GesyMonth(year, month, rate)
+            VALUES(2026, 9, 26.00)
+        """)
+        con.execute("""
+            INSERT INTO GesyReferrals(
+                history_id, referral_number, allowed_visits, notes
+            )
+            SELECT h.history_id, TRIM(h.gesy_referral), NULL,
+                   'Legacy migration από clinical_histories.gesy_referral'
+            FROM clinical_histories h
+            WHERE TRIM(COALESCE(h.gesy_referral,'')) <> ''
+        """)
+        details = json.dumps({
+            "legacy_coverage_assignment": "none",
+            "legacy_copayment_assignment": "none",
+            "gesy_seed": "2026-09:26.00",
+        }, ensure_ascii=False, sort_keys=True)
+        con.execute(
+            "INSERT INTO schema_migrations(migration_key, details) VALUES(?,?)",
+            (SESSION_COVERAGE_MIGRATION, details),
+        )
+        violations = con.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise ValidationError(
+                f"Η migration δημιούργησε {len(violations)} παραβιάσεις foreign key"
+            )
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 def meta_conn(app: Any) -> sqlite3.Connection:
     con = sqlite3.connect(str(app.config["META_DB_PATH"]), timeout=30)
     con.row_factory = sqlite3.Row
@@ -398,7 +891,7 @@ def undo_last_change(app: Any) -> str:
             if table != "appointments" or pk_name != "appointment_id":
                 raise ValidationError("Μη ασφαλής διαγραφή παρουσίας Undo")
             extra = json.loads(change["extra_json"] or "{}")
-            if set(extra) != {"appointments", "payments"}:
+            if set(extra) != {"appointments", "payments", "future_appointment_links"}:
                 raise ValidationError("Ελλιπές αντίγραφο διαγραφής παρουσίας")
             appointment_rows = extra.get("appointments")
             if (
@@ -435,6 +928,17 @@ def undo_last_change(app: Any) -> str:
                         f'INSERT INTO "{restore_table}"({column_sql}) VALUES({placeholders})',
                         [row[column] for column in columns],
                     )
+            future_links = extra.get("future_appointment_links")
+            if not isinstance(future_links, list) or any(
+                not isinstance(link_id, int) for link_id in future_links
+            ):
+                raise ValidationError("Μη ασφαλείς συνδέσεις ραντεβού Undo")
+            for link_id in future_links:
+                con.execute(
+                    "UPDATE Future_appointments SET completed_appointment_id=?,"
+                    "updated_at=CURRENT_TIMESTAMP WHERE future_appointment_id=?",
+                    (pk_value, link_id),
+                )
         elif operation == "activate_history":
             extra = json.loads(change["extra_json"] or "{}")
             con.execute(
@@ -452,7 +956,9 @@ def undo_last_change(app: Any) -> str:
             restore_plan = (
                 ("patients", "patient_id"),
                 ("clinical_histories", "history_id"),
+                ("GesyReferrals", "gesy_referral_id"),
                 ("appointments", "appointment_id"),
+                ("Future_appointments", "future_appointment_id"),
                 ("payments", "payment_id"),
             )
             if set(extra) != {item[0] for item in restore_plan}:
@@ -483,6 +989,51 @@ def undo_last_change(app: Any) -> str:
                         or not set(row).issubset(schema_columns)
                     ):
                         raise ValidationError("Μη ασφαλής εγγραφή Undo")
+                    columns = list(row)
+                    column_sql = ",".join(f'"{column}"' for column in columns)
+                    placeholders = ",".join("?" for _ in columns)
+                    con.execute(
+                        f'INSERT INTO "{restore_table}"({column_sql}) VALUES({placeholders})',
+                        [row[column] for column in columns],
+                    )
+        elif operation == "delete_history":
+            if table != "clinical_histories" or pk_name != "history_id":
+                raise ValidationError("Μη ασφαλής διαγραφή ιστορικού Undo")
+            extra = json.loads(change["extra_json"] or "{}")
+            restore_plan = (
+                ("clinical_histories", "history_id"),
+                ("GesyReferrals", "gesy_referral_id"),
+                ("appointments", "appointment_id"),
+                ("Future_appointments", "future_appointment_id"),
+                ("payments", "payment_id"),
+            )
+            if set(extra) != {item[0] for item in restore_plan}:
+                raise ValidationError("Ελλιπές αντίγραφο διαγραφής ιστορικού")
+            history_rows = extra.get("clinical_histories")
+            if (
+                not isinstance(history_rows, list)
+                or len(history_rows) != 1
+                or str(history_rows[0].get("history_id")) != str(pk_value)
+            ):
+                raise ValidationError("Μη ασφαλή στοιχεία ιστορικού Undo")
+            for restore_table, restore_pk in restore_plan:
+                rows = extra.get(restore_table)
+                if not isinstance(rows, list):
+                    raise ValidationError("Μη ασφαλείς εγγραφές ιστορικού Undo")
+                schema_columns = {
+                    row["name"]
+                    for row in con.execute(f'PRAGMA table_info("{restore_table}")').fetchall()
+                }
+                if restore_pk not in schema_columns:
+                    raise ValidationError("Μη ασφαλές σχήμα ιστορικού Undo")
+                for row in rows:
+                    if (
+                        not isinstance(row, dict)
+                        or restore_pk not in row
+                        or not row
+                        or not set(row).issubset(schema_columns)
+                    ):
+                        raise ValidationError("Μη ασφαλής εγγραφή ιστορικού Undo")
                     columns = list(row)
                     column_sql = ",".join(f'"{column}"' for column in columns)
                     placeholders = ",".join("?" for _ in columns)
@@ -562,32 +1113,33 @@ def validate_default_amount(value: Any) -> str:
 
 
 def create_backup(app: Any, *, force: bool = False) -> Path:
-    source_path = Path(app.config["DB_PATH"]).resolve()
-    backup_dir = Path(app.config["BACKUP_DIR"]).resolve()
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    today_prefix = f"{source_path.stem}_{date.today():%Y%m%d}"
-    existing = sorted(backup_dir.glob(f"{today_prefix}_*.db"))
-    if existing and not force:
-        return existing[-1]
+    with database_guard(app):
+        source_path = Path(app.config["DB_PATH"]).resolve()
+        backup_dir = Path(app.config["BACKUP_DIR"]).resolve()
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        today_prefix = f"{source_path.stem}_{date.today():%Y%m%d}"
+        existing = sorted(backup_dir.glob(f"{today_prefix}_*.db"))
+        if existing and not force:
+            return existing[-1]
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    destination = backup_dir / f"{source_path.stem}_{stamp}.db"
-    source = sqlite3.connect(f"file:{source_path.as_posix()}?mode=ro", uri=True, timeout=30)
-    target = sqlite3.connect(destination)
-    try:
-        integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            raise RuntimeError(f"Αποτυχία ελέγχου βάσης: {integrity}")
-        source.backup(target)
-        target.commit()
-    except Exception:
-        target.close()
-        source.close()
-        destination.unlink(missing_ok=True)
-        raise
-    else:
-        target.close()
-        source.close()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        destination = backup_dir / f"{source_path.stem}_{stamp}.db"
+        source = sqlite3.connect(f"file:{source_path.as_posix()}?mode=ro", uri=True, timeout=30)
+        target = sqlite3.connect(destination)
+        try:
+            integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise RuntimeError(f"Αποτυχία ελέγχου βάσης: {integrity}")
+            source.backup(target)
+            target.commit()
+        except Exception:
+            target.close()
+            source.close()
+            destination.unlink(missing_ok=True)
+            raise
+        else:
+            target.close()
+            source.close()
 
     keep = max(1, int(app.config.get("BACKUP_RETENTION", 30)))
     backups = sorted(backup_dir.glob(f"{source_path.stem}_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)

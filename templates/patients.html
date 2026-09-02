@@ -4,18 +4,18 @@
 {% block content %}
 <section class="panel">
   <div class="panel-header">
-    <div><h1>{% if request.args.get('choose_for_history') %}Επιλογή ασθενούς για νέο ιστορικό{% else %}Ασθενείς{% endif %}</h1></div>
+    <div class="panel-title"><div class="panel-title-row"><h1>{% if request.args.get('choose_for_history') %}Επιλογή ασθενούς για νέο ιστορικό{% else %}Ασθενείς{% endif %}</h1>{% include '_record_count.html' %}</div></div>
     <div class="header-actions"><form class="search-form" method="get" autocomplete="off">{% if request.args.get('choose_for_history') %}<input type="hidden" name="choose_for_history" value="1">{% endif %}<input name="q" value="{{ q }}" placeholder="Όνομα, επώνυμο, κινητό ή ID"><button>Αναζήτηση</button></form>{% if not request.args.get('choose_for_history') %}<a class="primary-btn" href="{{ url_for('patient_new') }}">+ Νέος ασθενής</a>{% endif %}</div>
   </div>
   <div class="table-wrap">
-    <table class="data-table"><thead><tr>{{ sortable('ID', 'patient_id', current_sort, current_dir) }}{{ sortable('Όνομα', 'first_name', current_sort, current_dir) }}{{ sortable('Επώνυμο', 'last_name', current_sort, current_dir) }}{{ sortable('Ιστορικά/Ενεργά', 'history_count', current_sort, current_dir) }}{{ sortable('Ενεργός', 'is_active', current_sort, current_dir) }}<th>Ενέργεια</th>{{ sortable('Κινητό', 'mobile', current_sort, current_dir) }}{{ sortable('Αριθμός Ταυτότητας', 'identity_number', current_sort, current_dir) }}{{ sortable('Γέννηση', 'birthdate', current_sort, current_dir) }}</tr></thead><tbody data-infinite-list data-next-offset="{{ next_offset }}" data-batch-size="{{ batch_size }}" data-has-more="{{ 'true' if has_more else 'false' }}" data-colspan="9">
-      <tr class="infinite-spacer" data-infinite-top hidden><td colspan="9"></td></tr>
+    {% set patient_colspan = 9 if request.args.get('choose_for_history') else 8 %}
+    <table class="data-table"><thead><tr>{{ sortable('ID', 'patient_id', current_sort, current_dir) }}{{ sortable('Όνομα', 'first_name', current_sort, current_dir) }}{{ sortable('Επώνυμο', 'last_name', current_sort, current_dir) }}{{ sortable('Ιστορικά/Ενεργά', 'history_count', current_sort, current_dir) }}{{ sortable('Ενεργός', 'is_active', current_sort, current_dir) }}{% if request.args.get('choose_for_history') %}<th>Ενέργεια</th>{% endif %}{{ sortable('Κινητό', 'mobile', current_sort, current_dir) }}{{ sortable('Αριθμός Ταυτότητας', 'identity_number', current_sort, current_dir) }}{{ sortable('Γέννηση', 'birthdate', current_sort, current_dir) }}</tr></thead><tbody data-infinite-list data-next-offset="{{ next_offset }}" data-batch-size="{{ batch_size }}" data-has-more="{{ 'true' if has_more else 'false' }}" data-colspan="{{ patient_colspan }}">
+      <tr class="infinite-spacer" data-infinite-top hidden><td colspan="{{ patient_colspan }}"></td></tr>
       {% include '_patient_rows.html' %}
-      <tr class="infinite-spacer" data-infinite-bottom hidden><td colspan="9"></td></tr>
+      <tr class="infinite-spacer" data-infinite-bottom hidden><td colspan="{{ patient_colspan }}"></td></tr>
     </tbody></table>
   </div>
   <div class="table-footer">
-    {% include '_record_count.html' %}
     <div class="infinite-status" data-infinite-status aria-live="polite">{{ 'Κυλήστε για αυτόματη φόρτωση περισσότερων εγγραφών.' if has_more else 'Όλες οι εγγραφές φορτώθηκαν.' }}</div>
   </div>
 </section>
